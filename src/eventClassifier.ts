@@ -70,6 +70,10 @@ function linkKey(calendar: CalendarRole, iCalUID: string): string {
 function buildLinksIndex(links: ReadonlyArray<LinkEntry>): ReadonlyMap<string, LinkEntry> {
   const index = new Map<string, LinkEntry>();
   for (const link of links) {
+    // srcUid が空の行で repair すると空の srcUid を書き戻してしまうため、黙って除外せず明確にエラーにする
+    if (link.srcUid.length === 0) {
+      throw new Error(`links の行に srcUid がありません (calendar=${link.calendar}, iCalUID=${link.iCalUID})。`);
+    }
     index.set(linkKey(link.calendar, link.iCalUID), link);
   }
   return index;

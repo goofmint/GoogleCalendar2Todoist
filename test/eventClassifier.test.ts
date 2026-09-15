@@ -425,3 +425,11 @@ describe('classify - result ordering and immutability', () => {
     expect(links).toEqual(linksSnapshot);
   });
 });
+
+describe('classify - links row validation', () => {
+  it('throws when a links row has an empty srcUid', () => {
+    const event = buildEvent({ iCalUID: 'uid@example.com' });
+    const links = [buildLink({ calendar: 'todoist', iCalUID: 'uid@example.com', srcUid: '', kind: 'generated' })];
+    expect(() => classify('todoist', [event], links)).toThrow(/uid@example\.com/);
+  });
+});
