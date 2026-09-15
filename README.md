@@ -21,7 +21,7 @@ npm run push
 2. `settings` シートの `todoistCalendarId` の行に、「Todoist」カレンダーのカレンダーIDを入力する。
 3. 以降は時間トリガーにより `sync` が自動実行されます。
 
-`settings` シートの `initialMatchDoneAt` を空欄に戻すと、次回の `sync` 実行で初回照合（既存の予定同士をペアリングする処理）がやり直されます。
+`settings` シートの `initialMatchDoneAt` を空欄に戻すと、次回の `sync` 実行で初回照合（既存の予定同士をペアリングする処理）がもう一度実行されます。ただし、すでにペアになっている予定（予定側に `initialMatch` が残っているもの、または `links` シートに `paired` 行があるもの）は照合の対象外で、ペア情報を持たない予定だけが照合されます。
 
 ### npm scripts
 

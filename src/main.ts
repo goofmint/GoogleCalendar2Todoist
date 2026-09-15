@@ -111,11 +111,22 @@ export function sync(): void {
  * 何度実行しても `sync` のトリガーは 1 本のままになる（idempotent）。
  */
 export function setup(): void {
-  ensureSheets();
+  // sync と同じロックで直列化し、シート作成中の同期や、setup の同時実行によるトリガーの重複を防ぐ。
+  // 手動実行なので、ロックが取れない場合は黙って終わらず明確にエラーにする。
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(LOCK_WAIT_MS)) {
+    throw new Error('setup: 同期処理の実行中のためロックを取得できませんでした。しばらくしてから再実行してください。');
+  }
 
-  const existingTriggers = ScriptApp.getProjectTriggers();
-  const hasSyncTrigger = existingTriggers.some((trigger) => trigger.getHandlerFunction() === TRIGGER_HANDLER);
-  if (!hasSyncTrigger) {
-    ScriptApp.newTrigger(TRIGGER_HANDLER).timeBased().everyMinutes(TRIGGER_INTERVAL_MINUTES).create();
+  try {
+    ensureSheets();
+
+    const existingTriggers = ScriptApp.getProjectTriggers();
+    const hasSyncTrigger = existingTriggers.some((trigger) => trigger.getHandlerFunction() === TRIGGER_HANDLER);
+    if (!hasSyncTrigger) {
+      ScriptApp.newTrigger(TRIGGER_HANDLER).timeBased().everyMinutes(TRIGGER_INTERVAL_MINUTES).create();
+    }
+  } finally {
+    lock.releaseLock();
   }
 }

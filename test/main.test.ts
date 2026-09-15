@@ -338,4 +338,34 @@ describe('setup', () => {
 
     expect(newTrigger).toHaveBeenCalledWith(TRIGGER_HANDLER);
   });
+
+  it('runs under the script lock and releases it after completing', () => {
+    stubScriptApp([]);
+
+    setup();
+
+    expect(fakeLock.tryLock).toHaveBeenCalledTimes(1);
+    expect(fakeLock.releaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws without touching sheets or triggers when the lock is busy', () => {
+    fakeLock.tryLock = vi.fn().mockReturnValue(false);
+    const { newTrigger } = stubScriptApp([]);
+
+    expect(() => setup()).toThrow();
+    expect(ensureSheetsMock).not.toHaveBeenCalled();
+    expect(newTrigger).not.toHaveBeenCalled();
+    expect(fakeLock.releaseLock).not.toHaveBeenCalled();
+  });
+
+  it('releases the lock even when sheet initialization throws', () => {
+    ensureSheetsMock.mockImplementation(() => {
+      throw new Error('sheet error');
+    });
+    const { newTrigger } = stubScriptApp([]);
+
+    expect(() => setup()).toThrow('sheet error');
+    expect(newTrigger).not.toHaveBeenCalled();
+    expect(fakeLock.releaseLock).toHaveBeenCalledTimes(1);
+  });
 });
