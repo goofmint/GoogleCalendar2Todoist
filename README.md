@@ -15,11 +15,13 @@ npm run build
 npm run push
 ```
 
-`npm run push` で `dist/` の内容がGoogle Apps Scriptプロジェクトへ送信されます。送信後、GASエディタで `sync` / `setup` 関数が選択できることを確認してください。
+`npm run push` で `dist/` の内容がGoogle Apps Scriptプロジェクトへ送信されます。送信後、GASエディタで以下を行ってください。
 
-> **注意**: 現時点の `setup` と `sync` は空の雛形です。シートの作成・トリガーの登録・同期処理は Task 2.9（#11）で実装されるまで行われません。
+1. GASエディタで `setup` 関数を選択して**手動で1回実行**する（初回はGoogleアカウントの認可を求められるので許可する）。これにより `settings` / `log` / `links` シートが作成され、`sync` を5分おきに実行する時間トリガーが登録されます（`setup` は何度実行してもトリガーが1本のままになります）。
+2. `settings` シートの `todoistCalendarId` の行に、「Todoist」カレンダーのカレンダーIDを入力する。
+3. 以降は時間トリガーにより `sync` が自動実行されます。
 
-Task 2.9 の実装後は、GASエディタで `setup` 関数を手動で1回実行し（シートの作成とトリガーの登録）、`settings` シートに `todoistCalendarId` を入力してください。
+`settings` シートの `initialMatchDoneAt` を空欄に戻すと、次回の `sync` 実行で初回照合（既存の予定同士をペアリングする処理）がもう一度実行されます。ただし、すでにペアになっている予定（予定側に `initialMatch` が残っているもの、または `links` シートに `paired` 行があるもの）は照合の対象外で、ペア情報を持たない予定だけが照合されます。
 
 ### npm scripts
 
