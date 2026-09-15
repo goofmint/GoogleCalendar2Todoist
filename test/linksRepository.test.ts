@@ -231,3 +231,39 @@ describe('writeLinks', () => {
     expect(readLinks()).toEqual([]);
   });
 });
+
+describe('writeLinks - atomic replacement', () => {
+  it('throws on an invalid recordedAt without touching existing rows', () => {
+    const initial: CellValue[][] = [
+      [...LINKS_HEADER],
+      ['primary', 'uid-1', 'src-1', 'generated', '2026-01-01T00:00:00.000Z'],
+    ];
+    const sheet = createFakeSheet(initial);
+    stubSpreadsheet({ links: sheet });
+
+    expect(() =>
+      writeLinks([
+        { calendar: 'todoist', iCalUID: 'uid-ok', srcUid: 'src-ok', kind: 'generated', recordedAt: new Date('2026-02-01T00:00:00.000Z') },
+        { calendar: 'todoist', iCalUID: 'uid-bad', srcUid: 'src-bad', kind: 'generated', recordedAt: new Date('invalid') },
+      ]),
+    ).toThrow(/uid-bad/);
+    expect(sheet.snapshot()).toEqual(initial);
+  });
+
+  it('writes the whole replacement range with a single setValues call', () => {
+    const sheet = createFakeSheet([
+      [...LINKS_HEADER],
+      ['primary', 'uid-1', 'src-1', 'generated', '2026-01-01T00:00:00.000Z'],
+      ['primary', 'uid-2', 'src-2', 'generated', '2026-01-01T00:00:00.000Z'],
+    ]);
+    const getRangeSpy = vi.spyOn(sheet, 'getRange');
+    stubSpreadsheet({ links: sheet });
+
+    writeLinks([
+      { calendar: 'todoist', iCalUID: 'uid-new', srcUid: 'src-new', kind: 'paired', recordedAt: new Date('2026-02-01T00:00:00.000Z') },
+    ]);
+
+    expect(getRangeSpy).toHaveBeenCalledTimes(1);
+    expect(getRangeSpy).toHaveBeenCalledWith(2, 1, 2, LINKS_HEADER.length);
+  });
+});

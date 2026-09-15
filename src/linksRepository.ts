@@ -125,21 +125,31 @@ export function readLinks(): LinkEntry[] {
 }
 
 /**
- * links シートのヘッダ以下を全件クリアしたうえで、entries を 1 回の setValues で書き込む。
+ * links シートのヘッダ以下を entries で置き換える。
+ * 書き込む行をすべて組み立て・検証してからシートに触れるため、途中で throw しても既存の行は失われない。
+ * 置き換え範囲（新しい行数と既存の行数の大きいほう）を 1 回の setValues で書き、余った行は空文字で埋める。
  * シートが無ければ throw する。
  */
 export function writeLinks(entries: ReadonlyArray<LinkEntry>): void {
   const sheet = getLinksSheetOrThrow();
 
-  const staleRowCount = sheet.getLastRow() - 1;
-  if (staleRowCount > 0) {
-    sheet.getRange(2, 1, staleRowCount, 5).clearContent();
-  }
+  const rows: CellValue[][] = entries.map((entry) => {
+    if (Number.isNaN(entry.recordedAt.getTime())) {
+      throw new Error(`links に書き込む行の recordedAt が不正です (calendar=${entry.calendar}, iCalUID=${entry.iCalUID})。`);
+    }
+    return [entry.calendar, entry.iCalUID, entry.srcUid, entry.kind, entry.recordedAt.toISOString()];
+  });
 
-  if (entries.length === 0) {
+  const existingRowCount = Math.max(sheet.getLastRow() - 1, 0);
+  const totalRowCount = Math.max(rows.length, existingRowCount);
+  if (totalRowCount === 0) {
     return;
   }
 
-  const rows = entries.map((entry) => [entry.calendar, entry.iCalUID, entry.srcUid, entry.kind, entry.recordedAt.toISOString()]);
-  sheet.getRange(2, 1, rows.length, 5).setValues(rows);
+  const blankRow: CellValue[] = LINKS_HEADER.map(() => '');
+  const paddedRows = [...rows];
+  while (paddedRows.length < totalRowCount) {
+    paddedRows.push([...blankRow]);
+  }
+  sheet.getRange(2, 1, totalRowCount, LINKS_HEADER.length).setValues(paddedRows);
 }
