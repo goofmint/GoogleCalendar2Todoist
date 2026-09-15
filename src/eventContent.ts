@@ -18,6 +18,10 @@ function hasNonEmptyRecurrence(event: CalendarEvent): boolean {
   return event.recurrence !== undefined && event.recurrence.length > 0;
 }
 
+// RFC3339 の末尾オフセット（Z または ±HH:MM）を要求する。Calendar API は常にこの形式で dateTime を返すため、
+// オフセット無しの値をホストのタイムゾーンで解釈してしまう挙動を避ける（タイムゾーン変換は実装しない）。
+const DATE_TIME_OFFSET_PATTERN = /(?:Z|[+-]\d{2}:\d{2})$/;
+
 /**
  * start / end の一方を正規形の文字列にする。
  * date（終日）または dateTime（時刻あり）のいずれも無い場合は Error を throw する（フォールバックしない）。
@@ -33,7 +37,13 @@ function normalizeEventDateTime(
     return `D:${dateTime.date}`;
   }
   if (dateTime.dateTime) {
+    if (!DATE_TIME_OFFSET_PATTERN.test(dateTime.dateTime)) {
+      throw new Error(`Event dateTime must include a UTC offset (Z or ±HH:MM): ${dateTime.dateTime}`);
+    }
     const epochMs = new Date(dateTime.dateTime).getTime();
+    if (Number.isNaN(epochMs)) {
+      throw new Error(`Event dateTime is not a valid date: ${dateTime.dateTime}`);
+    }
     if (!appendTimeZone) {
       return `T:${epochMs}`;
     }
@@ -67,9 +77,9 @@ export function contentKeyForInitialMatch(event: CalendarEvent): string {
 }
 
 function copyEventDateTime(
-  dateTime: GoogleAppsScript.Calendar.Schema.EventDateTime | undefined,
-): GoogleAppsScript.Calendar.Schema.EventDateTime | undefined {
-  return dateTime === undefined ? undefined : { ...dateTime };
+  dateTime: GoogleAppsScript.Calendar.Schema.EventDateTime,
+): GoogleAppsScript.Calendar.Schema.EventDateTime {
+  return { ...dateTime };
 }
 
 /**
@@ -98,6 +108,12 @@ export function buildInsertResource(calendar: CalendarRole, source: CalendarEven
   if (!source.iCalUID) {
     throw new Error('Source event must have iCalUID to build an insert resource.');
   }
+  if (source.start === undefined) {
+    throw new Error('Source event must have start to build an insert resource.');
+  }
+  if (source.end === undefined) {
+    throw new Error('Source event must have end to build an insert resource.');
+  }
   const resource: CalendarEvent = {
     summary: source.summary,
     start: copyEventDateTime(source.start),
@@ -119,6 +135,12 @@ export function buildInsertResource(calendar: CalendarRole, source: CalendarEven
  * M / C の visibility と reminders の差異は buildInsertResource と同じ規則を適用する。
  */
 export function buildUpdateResource(calendar: CalendarRole, source: CalendarEvent): CalendarEvent {
+  if (source.start === undefined) {
+    throw new Error('Source event must have start to build an update resource.');
+  }
+  if (source.end === undefined) {
+    throw new Error('Source event must have end to build an update resource.');
+  }
   const resource: CalendarEvent = {
     summary: source.summary,
     start: copyEventDateTime(source.start),

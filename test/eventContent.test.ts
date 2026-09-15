@@ -141,6 +141,31 @@ describe('normalizeContent / isSameContent', () => {
     const event = timedEvent({ start: undefined });
     expect(() => normalizeContent(event)).toThrow();
   });
+
+  it('throws when dateTime has no UTC offset', () => {
+    const event = timedEvent({ start: { dateTime: '2026-09-15T10:00:00' } });
+    expect(() => normalizeContent(event)).toThrow();
+  });
+
+  it('throws when dateTime is not a valid date string', () => {
+    const event = timedEvent({ start: { dateTime: 'not-a-date+09:00' } });
+    expect(() => normalizeContent(event)).toThrow();
+  });
+
+  it('accepts a dateTime with a Z offset', () => {
+    const event = timedEvent({ start: { dateTime: '2026-09-15T01:00:00Z' } });
+    expect(() => normalizeContent(event)).not.toThrow();
+  });
+
+  it('accepts a dateTime with a +09:00 offset', () => {
+    const event = timedEvent({ start: { dateTime: '2026-09-15T10:00:00+09:00' } });
+    expect(() => normalizeContent(event)).not.toThrow();
+  });
+
+  it('accepts a dateTime with a -05:00 offset', () => {
+    const event = timedEvent({ start: { dateTime: '2026-09-15T10:00:00-05:00' } });
+    expect(() => normalizeContent(event)).not.toThrow();
+  });
 });
 
 describe('contentKeyForInitialMatch', () => {
@@ -212,11 +237,14 @@ describe('buildInsertResource', () => {
     expect(resource.recurrence).toEqual([]);
   });
 
-  it('copies start/end verbatim as undefined when the source has none', () => {
-    const source = timedEvent({ start: undefined, end: undefined });
-    const resource = buildInsertResource('todoist', source);
-    expect(resource.start).toBeUndefined();
-    expect(resource.end).toBeUndefined();
+  it('throws when the source has no start', () => {
+    const source = timedEvent({ start: undefined });
+    expect(() => buildInsertResource('todoist', source)).toThrow();
+  });
+
+  it('throws when the source has no end', () => {
+    const source = timedEvent({ end: undefined });
+    expect(() => buildInsertResource('todoist', source)).toThrow();
   });
 
   it('does not mutate the source event (start/end/recurrence)', () => {
@@ -280,6 +308,16 @@ describe('buildUpdateResource', () => {
     const resource = buildUpdateResource('primary', source);
     resource.recurrence?.push('MUTATED');
     expect(source.recurrence).toEqual(snapshotRecurrence);
+  });
+
+  it('throws when the source has no start', () => {
+    const source = timedEvent({ start: undefined });
+    expect(() => buildUpdateResource('todoist', source)).toThrow();
+  });
+
+  it('throws when the source has no end', () => {
+    const source = timedEvent({ end: undefined });
+    expect(() => buildUpdateResource('todoist', source)).toThrow();
   });
 });
 
