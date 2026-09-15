@@ -1,0 +1,24 @@
+{
+  "name": "googlecalendar2todoist",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/goofmint/GoogleCalendar2Todoist.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/goofmint/GoogleCalendar2Todoist/issues"
+  },
+  "homepage": "https://github.com/goofmint/GoogleCalendar2Todoist#readme",
+  "dependencies": {
+    "@google/clasp": "^3.4.1"
+  }
+}
