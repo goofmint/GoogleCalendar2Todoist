@@ -1,0 +1,155 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { listFutureEvents, insertEvent, patchEvent, removeEvent } from '../src/calendarGateway';
+import type { CalendarEvent } from '../src/types';
+import { LIST_PAGE_SIZE, SEND_UPDATES } from '../src/config';
+
+/**
+ * `Calendar` advanced service のうち、このモジュールが使う範囲だけを narrow に表現した型。
+ * `GoogleAppsScript.Calendar` 全体（Acl / CalendarList など）を実装する必要はない。
+ */
+type ListOptionalArgs = {
+  timeMin: string;
+  singleEvents: boolean;
+  showDeleted: boolean;
+  maxResults: number;
+  pageToken: string | undefined;
+};
+
+type WriteOptionalArgs = { sendUpdates: string };
+
+type FakeEventsListResponse = { items?: CalendarEvent[]; nextPageToken?: string };
+
+type FakeEventsCollection = {
+  list(calendarId: string, optionalArgs: ListOptionalArgs): FakeEventsListResponse;
+  insert(resource: CalendarEvent, calendarId: string, optionalArgs: WriteOptionalArgs): CalendarEvent;
+  patch(resource: CalendarEvent, calendarId: string, eventId: string, optionalArgs: WriteOptionalArgs): CalendarEvent;
+  remove(calendarId: string, eventId: string, optionalArgs: WriteOptionalArgs): void;
+};
+
+type FakeCalendarService = { Events: FakeEventsCollection };
+
+function fakeEvent(id: string): CalendarEvent {
+  return { id, iCalUID: `${id}@example.com` };
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe('listFutureEvents', () => {
+  it('concatenates items across 3 pages, and a page without items contributes nothing', () => {
+    const now = new Date('2026-09-16T00:00:00Z');
+    const list = vi.fn((_calendarId: string, optionalArgs: ListOptionalArgs): FakeEventsListResponse => {
+      if (optionalArgs.pageToken === undefined) {
+        return { items: [fakeEvent('a'), fakeEvent('b')], nextPageToken: 'token-2' };
+      }
+      if (optionalArgs.pageToken === 'token-2') {
+        return { nextPageToken: 'token-3' }; // items が無いページ
+      }
+      if (optionalArgs.pageToken === 'token-3') {
+        return { items: [fakeEvent('c')] };
+      }
+      throw new Error(`unexpected pageToken: ${optionalArgs.pageToken}`);
+    });
+    const fakeService: FakeCalendarService = {
+      Events: {
+        list,
+        insert: vi.fn(),
+        patch: vi.fn(),
+        remove: vi.fn(),
+      },
+    };
+    vi.stubGlobal('Calendar', fakeService);
+
+    const result = listFutureEvents('cal-1', now);
+
+    expect(result.map((e) => e.id)).toEqual(['a', 'b', 'c']);
+    expect(list).toHaveBeenCalledTimes(3);
+    expect(list).toHaveBeenNthCalledWith(1, 'cal-1', {
+      timeMin: now.toISOString(),
+      singleEvents: false,
+      showDeleted: false,
+      maxResults: LIST_PAGE_SIZE,
+      pageToken: undefined,
+    });
+    expect(list).toHaveBeenNthCalledWith(2, 'cal-1', {
+      timeMin: now.toISOString(),
+      singleEvents: false,
+      showDeleted: false,
+      maxResults: LIST_PAGE_SIZE,
+      pageToken: 'token-2',
+    });
+    expect(list).toHaveBeenNthCalledWith(3, 'cal-1', {
+      timeMin: now.toISOString(),
+      singleEvents: false,
+      showDeleted: false,
+      maxResults: LIST_PAGE_SIZE,
+      pageToken: 'token-3',
+    });
+  });
+
+  it('returns an empty array when the single page has no items', () => {
+    const now = new Date('2026-09-16T00:00:00Z');
+    const list = vi.fn((): FakeEventsListResponse => ({}));
+    const fakeService: FakeCalendarService = {
+      Events: { list, insert: vi.fn(), patch: vi.fn(), remove: vi.fn() },
+    };
+    vi.stubGlobal('Calendar', fakeService);
+
+    expect(listFutureEvents('cal-1', now)).toEqual([]);
+    expect(list).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws when the Calendar advanced service is not enabled', () => {
+    vi.stubGlobal('Calendar', undefined);
+    expect(() => listFutureEvents('cal-1', new Date())).toThrow();
+  });
+});
+
+describe('insertEvent / patchEvent / removeEvent', () => {
+  it('insertEvent calls Calendar.Events.insert with (resource, calendarId, { sendUpdates })', () => {
+    const inserted = fakeEvent('new-1');
+    const insert = vi.fn(() => inserted);
+    const fakeService: FakeCalendarService = {
+      Events: { list: vi.fn(), insert, patch: vi.fn(), remove: vi.fn() },
+    };
+    vi.stubGlobal('Calendar', fakeService);
+
+    const resource: CalendarEvent = { summary: 'test' };
+    const result = insertEvent('cal-1', resource);
+
+    expect(result).toBe(inserted);
+    expect(insert).toHaveBeenCalledTimes(1);
+    expect(insert).toHaveBeenCalledWith(resource, 'cal-1', { sendUpdates: SEND_UPDATES });
+    expect(SEND_UPDATES).toBe('none');
+  });
+
+  it('patchEvent calls Calendar.Events.patch with (resource, calendarId, eventId, { sendUpdates })', () => {
+    const patched = fakeEvent('e-1');
+    const patch = vi.fn(() => patched);
+    const fakeService: FakeCalendarService = {
+      Events: { list: vi.fn(), insert: vi.fn(), patch, remove: vi.fn() },
+    };
+    vi.stubGlobal('Calendar', fakeService);
+
+    const resource: CalendarEvent = { summary: 'updated' };
+    const result = patchEvent('cal-1', 'e-1', resource);
+
+    expect(result).toBe(patched);
+    expect(patch).toHaveBeenCalledTimes(1);
+    expect(patch).toHaveBeenCalledWith(resource, 'cal-1', 'e-1', { sendUpdates: SEND_UPDATES });
+  });
+
+  it('removeEvent calls Calendar.Events.remove (not delete) with (calendarId, eventId, { sendUpdates })', () => {
+    const remove = vi.fn();
+    const fakeService: FakeCalendarService = {
+      Events: { list: vi.fn(), insert: vi.fn(), patch: vi.fn(), remove },
+    };
+    vi.stubGlobal('Calendar', fakeService);
+
+    removeEvent('cal-1', 'e-1');
+
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledWith('cal-1', 'e-1', { sendUpdates: SEND_UPDATES });
+  });
+});
