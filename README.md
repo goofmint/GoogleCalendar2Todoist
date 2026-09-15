@@ -15,9 +15,11 @@ npm run build
 npm run push
 ```
 
-`npm run push` で `dist/` の内容がGoogle Apps Scriptプロジェクトへ送信されます。送信後、GASエディタを開き、`setup` 関数を手動で1回実行してください（シートの作成とトリガーの登録を行います）。
+`npm run push` で `dist/` の内容がGoogle Apps Scriptプロジェクトへ送信されます。送信後、GASエディタで `sync` / `setup` 関数が選択できることを確認してください。
 
-その後、`settings` シートに `todoistCalendarId` などの必要な値を入力してください（詳細は後続タスクを参照）。
+> **注意**: 現時点の `setup` と `sync` は空の雛形です。シートの作成・トリガーの登録・同期処理は Task 2.9（#11）で実装されるまで行われません。
+
+Task 2.9 の実装後は、GASエディタで `setup` 関数を手動で1回実行し（シートの作成とトリガーの登録）、`settings` シートに `todoistCalendarId` を入力してください。
 
 ### npm scripts
 
