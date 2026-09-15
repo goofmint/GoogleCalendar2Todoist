@@ -2,9 +2,12 @@
   "name": "googlecalendar2todoist",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "node esbuild.config.mjs",
+    "test": "vitest run",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "push": "npm run build && clasp push"
   },
   "repository": {
     "type": "git",
@@ -20,5 +23,14 @@
   "homepage": "https://github.com/goofmint/GoogleCalendar2Todoist#readme",
   "dependencies": {
     "@google/clasp": "^3.4.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/google-apps-script": "^2.0.13",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.10.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.70.0",
+    "vitest": "^5.0.1"
   }
 }
