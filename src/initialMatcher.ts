@@ -73,6 +73,11 @@ export function planInitialMatch(
   t: ReadonlyArray<CalendarEvent>,
   n: ReadonlyArray<CalendarEvent>,
 ): InitialMatchResult {
+  // ペアにならない予定や曖昧なキーの予定も含め、iCalUID の欠落は一律に throw する
+  for (const event of [...t, ...n]) {
+    requireICalUID(event);
+  }
+
   const tGroups = groupByContentKey(t);
   const nGroups = groupByContentKey(n);
 

@@ -209,6 +209,19 @@ describe('planInitialMatch: missing iCalUID', () => {
     const b = buildEvent({ iCalUID: '' });
     expect(() => planInitialMatch([a], [b])).toThrow();
   });
+
+  it('throws when an unmatched event has no iCalUID', () => {
+    const unmatched = buildEventWithoutICalUID({ summary: 'Only in T' });
+    const n = buildEvent({ summary: 'Only in N' });
+    expect(() => planInitialMatch([unmatched], [n])).toThrow();
+  });
+
+  it('throws when an event under an ambiguous key has no iCalUID', () => {
+    const t = buildEvent();
+    const n1 = buildEvent();
+    const n2 = buildEventWithoutICalUID();
+    expect(() => planInitialMatch([t], [n1, n2])).toThrow();
+  });
 });
 
 describe('planInitialMatch: immutability', () => {
