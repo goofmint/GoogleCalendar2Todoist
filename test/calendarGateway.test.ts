@@ -17,7 +17,12 @@ type ListOptionalArgs = {
 
 type WriteOptionalArgs = { sendUpdates: string };
 
-type InstancesOptionalArgs = { timeMin: string; maxResults: number; showDeleted: boolean };
+type InstancesOptionalArgs = {
+  timeMin: string;
+  maxResults: number;
+  showDeleted: boolean;
+  pageToken: string | undefined;
+};
 
 type FakeEventsListResponse = { items?: CalendarEvent[]; nextPageToken?: string };
 
@@ -196,6 +201,48 @@ describe('hasFutureInstance', () => {
     vi.stubGlobal('Calendar', fakeService);
 
     expect(hasFutureInstance('cal-1', 'series-1', now)).toBe(false);
+  });
+
+  it('skips pages containing only cancelled instances and returns true when a later page has an active one', () => {
+    const now = new Date('2026-09-16T00:00:00Z');
+    const instances = vi.fn(
+      (_calendarId: string, _eventId: string, optionalArgs: InstancesOptionalArgs): FakeEventsListResponse => {
+        if (optionalArgs.pageToken === undefined) {
+          return { items: [{ ...fakeEvent('a'), status: 'cancelled' }], nextPageToken: 'token-2' };
+        }
+        if (optionalArgs.pageToken === 'token-2') {
+          return { items: [{ ...fakeEvent('b'), status: 'confirmed' }] };
+        }
+        throw new Error(`unexpected pageToken: ${optionalArgs.pageToken}`);
+      },
+    );
+    const fakeService: FakeCalendarService = {
+      Events: { list: vi.fn(), insert: vi.fn(), patch: vi.fn(), remove: vi.fn(), instances },
+    };
+    vi.stubGlobal('Calendar', fakeService);
+
+    expect(hasFutureInstance('cal-1', 'series-1', now)).toBe(true);
+    expect(instances).toHaveBeenCalledTimes(2);
+    expect(instances.mock.calls[1][2].pageToken).toBe('token-2');
+  });
+
+  it('returns false when every page contains only cancelled instances', () => {
+    const now = new Date('2026-09-16T00:00:00Z');
+    const instances = vi.fn(
+      (_calendarId: string, _eventId: string, optionalArgs: InstancesOptionalArgs): FakeEventsListResponse => {
+        if (optionalArgs.pageToken === undefined) {
+          return { items: [{ ...fakeEvent('a'), status: 'cancelled' }], nextPageToken: 'token-2' };
+        }
+        return { items: [{ ...fakeEvent('b'), status: 'cancelled' }] };
+      },
+    );
+    const fakeService: FakeCalendarService = {
+      Events: { list: vi.fn(), insert: vi.fn(), patch: vi.fn(), remove: vi.fn(), instances },
+    };
+    vi.stubGlobal('Calendar', fakeService);
+
+    expect(hasFutureInstance('cal-1', 'series-1', now)).toBe(false);
+    expect(instances).toHaveBeenCalledTimes(2);
   });
 
   it('throws when the Calendar advanced service is not enabled', () => {

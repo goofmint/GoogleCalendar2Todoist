@@ -51,17 +51,29 @@ export function listFutureEvents(calendarId: string, now: Date): CalendarEvent[]
 /**
  * 繰り返し予定に、`now` 以降の回が残っているかどうかを判定する。
  * `Calendar.Events.instances(calendarId, eventId, { timeMin: now.toISOString(),
- * maxResults: INSTANCE_LOOKUP_MAX_RESULTS, showDeleted: false })` を呼び、
- * `response.items` が 1 件以上あれば true を返す。
+ * maxResults: INSTANCE_LOOKUP_MAX_RESULTS, showDeleted: false, pageToken })` を呼び、
+ * `status` が 'cancelled' でない回が 1 件でもあれば true を返す。
+ * `showDeleted: false` でも取り消された回が返ることがあるため、取り消された回だけのページは
+ * 読み飛ばし、`nextPageToken` が無くなるまで次のページを確認する。
  */
 export function hasFutureInstance(calendarId: string, eventId: string, now: Date): boolean {
   const service = getCalendarService();
-  const response = service.Events.instances(calendarId, eventId, {
-    timeMin: now.toISOString(),
-    maxResults: INSTANCE_LOOKUP_MAX_RESULTS,
-    showDeleted: false,
-  });
-  return response.items !== undefined && response.items.length > 0;
+  let pageToken: string | undefined;
+
+  do {
+    const response = service.Events.instances(calendarId, eventId, {
+      timeMin: now.toISOString(),
+      maxResults: INSTANCE_LOOKUP_MAX_RESULTS,
+      showDeleted: false,
+      pageToken,
+    });
+    if (response.items && response.items.some((instance) => instance.status !== 'cancelled')) {
+      return true;
+    }
+    pageToken = response.nextPageToken;
+  } while (pageToken !== undefined);
+
+  return false;
 }
 
 /**
