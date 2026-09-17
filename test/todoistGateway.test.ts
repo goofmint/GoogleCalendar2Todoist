@@ -60,6 +60,16 @@ describe('token handling', () => {
     expect(() => listTasks()).toThrow();
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  it('sends the token trimmed of surrounding whitespace/newlines as Bearer <trimmed>', () => {
+    stubToken('  secret-token\n');
+    const fetch = stubUrlFetchApp(() => jsonResponse(200, { results: [], next_cursor: null }));
+
+    listTasks();
+
+    const [, options] = fetch.mock.calls[0];
+    expect(options).toMatchObject({ headers: { Authorization: 'Bearer secret-token' } });
+  });
 });
 
 describe('non-2xx handling', () => {

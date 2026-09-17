@@ -221,6 +221,7 @@ describe('sync', () => {
       [syncAction],
       { primary: PRIMARY_CALENDAR_ID, todoist: 'todoist-calendar-id' },
       expect.anything(),
+      expect.anything(),
     );
     expect(writeLinksMock).toHaveBeenCalledWith(entries);
     expect(markInitialMatchDoneMock).not.toHaveBeenCalled();
@@ -311,6 +312,35 @@ describe('sync', () => {
     expect(loggerSpy.flush).toHaveBeenCalledTimes(1);
     expect(fakeLock.releaseLock).toHaveBeenCalledTimes(1);
     expect(writeLinksMock).not.toHaveBeenCalled();
+    expect(markInitialMatchDoneMock).not.toHaveBeenCalled();
+  });
+
+  it('writes links for progress already made by executeActions before it throws, without marking the initial match', () => {
+    // Todoist タスクには calendar イベントの srcUid のような自己修復手段が無いため、途中の throw
+    // でもここまでに作成した links 行（createdLinks）だけは書き戻さないと、次回 S4 が再発生し
+    // Todoist タスクが重複作成されてしまう（本改訂の対象そのもの）。
+    const createdLink: Omit<LinkEntry, 'recordedAt'> = {
+      calendar: 'todoist',
+      iCalUID: '',
+      srcUid: 'src-created-before-throw',
+      kind: 'generated',
+      todoistTaskId: 'task-created-before-throw',
+    };
+    executeActionsMock.mockImplementation((_actions, _calendarIds, _logger, result) => {
+      result.createdLinks.push(createdLink);
+      throw new Error('boom mid-way');
+    });
+    const entriesWithCreatedLink: LinkEntry[] = [{ ...createdLink, recordedAt: new Date('2026-01-01T00:00:00.000Z') }];
+    planLinksMock.mockReturnValue({ entries: entriesWithCreatedLink, changed: true });
+
+    expect(() => sync()).toThrow('boom mid-way');
+
+    expect(planLinksMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        result: expect.objectContaining({ createdLinks: [createdLink] }),
+      }),
+    );
+    expect(writeLinksMock).toHaveBeenCalledWith(entriesWithCreatedLink);
     expect(markInitialMatchDoneMock).not.toHaveBeenCalled();
   });
 

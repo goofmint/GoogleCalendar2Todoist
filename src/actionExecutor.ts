@@ -4,6 +4,9 @@
  * ディスパッチする。パッチ用リソースの構築は `eventContent.ts` の `build*Resource` に委譲する。
  * このモジュールは GAS のグローバルを直接参照しない（`calendarGateway` 経由でのみ呼び出す）。
  * API 呼び出しの例外はキャッチしない（呼び出し元の main.ts の finally でログが flush される）。
+ * 呼び出し元から渡される `result`（`ExecutionResultAccumulator`）に、action が成功するたびに
+ * 逐次書き込む。途中で例外が throw されても、そこまでの進捗が `result` に残るようにするためである
+ * （本改訂で追加。呼び出し元の main.ts はこの `result` を使って例外発生時にも links を更新する）。
  */
 
 import { insertEvent, patchEvent, removeEvent } from './calendarGateway';
@@ -17,7 +20,7 @@ import {
 } from './eventContent';
 import { linkKey } from './linksPlanner';
 import type { Logger } from './logger';
-import type { CalendarEvent, CalendarRole, ExecutionResult, LinkEntry, SyncAction } from './types';
+import type { CalendarEvent, CalendarRole, ExecutionResult, ExecutionResultAccumulator, SyncAction } from './types';
 
 /**
  * ログメッセージ用に、イベントの人が読める要約を作る。
@@ -49,9 +52,9 @@ export function executeActions(
   actions: ReadonlyArray<SyncAction>,
   calendarIds: Record<CalendarRole, string>,
   logger: Logger,
+  result: ExecutionResultAccumulator,
 ): ExecutionResult {
-  const createdLinks: Omit<LinkEntry, 'recordedAt'>[] = [];
-  const deletedKeys: string[] = [];
+  const { createdLinks, deletedKeys } = result;
 
   for (const action of actions) {
     const calendarId = calendarIds[action.calendar];
@@ -135,5 +138,5 @@ export function executeActions(
     }
   }
 
-  return { createdLinks, deletedKeys };
+  return result;
 }

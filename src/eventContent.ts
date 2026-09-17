@@ -244,10 +244,13 @@ export function buildTodoistTaskPayload(source: CalendarEvent): TodoistTaskPaylo
 
 /**
  * P→T 専用の差分判定。N の summary/start と、既存 Todoist タスクの content/due を比較する。
- * 自分たちが作成・更新するタスクの due は必ず UTC（Z 付き）の due_datetime か、日付のみの
- * due_date であるため、task.due.date を期待値と文字列比較する。
- * due が null、または期待した形式と一致しない場合は「内容が異なる」とみなし S5 update を出す
- * （不確実な場合は安全側＝更新側に倒す）。
+ * 終日（due_date）は従来どおり文字列比較する。
+ * 時刻あり（due_datetime）は、Todoist API v1 の `task.due.date` が 'YYYY-MM-DD' /
+ * floating な 'YYYY-MM-DDTHH:MM:SS' / UTC の 'YYYY-MM-DDTHH:MM:SS[.ssssss]Z' のいずれかで
+ * 返ってくる（`datetime` フィールドは v1 に存在しない）ため、文字列比較では小数秒などの
+ * 表記ゆれで一致しない場合がある。`task.due.date` が UTC 表記（'Z' 終わり）のときだけ、
+ * 両者を `Date.parse` して瞬間（epoch ms）で比較する。floating・日付のみ、または解析できない
+ * 場合は「内容が異なる」とみなし S5 update を出す（不確実な場合は安全側＝更新側に倒す）。
  */
 export function isSameTodoistTaskContent(source: CalendarEvent, task: TodoistTask): boolean {
   const expected = buildTodoistTaskPayload(source);
@@ -261,7 +264,12 @@ export function isSameTodoistTaskContent(source: CalendarEvent, task: TodoistTas
     return task.due.date === expected.due_date;
   }
   if (expected.due_datetime !== undefined) {
-    return task.due.date === expected.due_datetime;
+    if (!task.due.date.endsWith('Z')) {
+      return false;
+    }
+    const actualMs = Date.parse(task.due.date);
+    const expectedMs = Date.parse(expected.due_datetime);
+    return !Number.isNaN(actualMs) && !Number.isNaN(expectedMs) && actualMs === expectedMs;
   }
   return false;
 }

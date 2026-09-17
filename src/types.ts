@@ -98,6 +98,13 @@ export type ExecutionResult = {
   deletedKeys: ReadonlyArray<string>; // `${calendar}:${iCalUID}`
 };
 
+// executeActions が action を実行するたびに書き込む可変な入れ物。呼び出し元（main.ts の sync）が
+// 事前に生成して渡し、途中で例外が発生してもそこまでの進捗を読み取れるようにする（本改訂で追加）。
+export type ExecutionResultAccumulator = {
+  createdLinks: Omit<LinkEntry, 'recordedAt'>[];
+  deletedKeys: string[];
+};
+
 export type Settings = {
   todoistCalendarId: string;
   initialMatchDoneAt: string | null; // 空欄なら未実施。値の有無で判定するだけで、代わりの値で補うことはしない

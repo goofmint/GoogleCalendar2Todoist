@@ -4,7 +4,7 @@ import { insertEvent, patchEvent, removeEvent } from '../src/calendarGateway';
 import { createTask, removeTask, updateTask } from '../src/todoistGateway';
 import { buildInsertResource, buildUpdateResource, buildMarkResource, buildRepairResource, buildTodoistTaskPayload } from '../src/eventContent';
 import type { Logger } from '../src/logger';
-import type { CalendarEvent, CalendarRole, Direction, SyncAction, TodoistTask } from '../src/types';
+import type { CalendarEvent, CalendarRole, Direction, ExecutionResultAccumulator, SyncAction, TodoistTask } from '../src/types';
 
 vi.mock('../src/calendarGateway', () => ({
   insertEvent: vi.fn(),
@@ -68,6 +68,11 @@ function fakeTask(overrides: Partial<TodoistTask> = {}): TodoistTask {
   };
 }
 
+// executeActions の 4 番目の引数（result）用の空の accumulator を、テストごとに新しく作る。
+function emptyResult(): ExecutionResultAccumulator {
+  return { createdLinks: [], deletedKeys: [] };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
 });
@@ -75,7 +80,7 @@ beforeEach(() => {
 describe('executeActions', () => {
   it('returns an empty result and calls no gateway function for an empty action list', () => {
     const logger = createFakeLogger();
-    const result = executeActions([], calendarIds, logger);
+    const result = executeActions([], calendarIds, logger, emptyResult());
 
     expect(result).toEqual({ createdLinks: [], deletedKeys: [] });
     expect(insertEventMock).not.toHaveBeenCalled();
@@ -94,7 +99,7 @@ describe('executeActions', () => {
       insertEventMock.mockReturnValue({ iCalUID: 'generated-1@example.com' });
 
       const logger = createFakeLogger();
-      const result = executeActions([action], calendarIds, logger);
+      const result = executeActions([action], calendarIds, logger, emptyResult());
 
       expect(insertEventMock).toHaveBeenCalledTimes(1);
       expect(insertEventMock).toHaveBeenCalledWith('primary-calendar-id', buildInsertResource('primary', source));
@@ -116,7 +121,7 @@ describe('executeActions', () => {
       insertEventMock.mockReturnValue({});
 
       const logger = createFakeLogger();
-      expect(() => executeActions([action], calendarIds, logger)).toThrow();
+      expect(() => executeActions([action], calendarIds, logger, emptyResult())).toThrow();
     });
 
     it('throws before calling insertEvent when the source has no iCalUID', () => {
@@ -124,7 +129,7 @@ describe('executeActions', () => {
       const action: SyncAction = { kind: 'create', rule: 'S1', direction: 'T→P', calendar: 'primary', source };
 
       const logger = createFakeLogger();
-      expect(() => executeActions([action], calendarIds, logger)).toThrow();
+      expect(() => executeActions([action], calendarIds, logger, emptyResult())).toThrow();
       expect(insertEventMock).not.toHaveBeenCalled();
     });
   });
@@ -137,7 +142,7 @@ describe('executeActions', () => {
       createTaskMock.mockReturnValue(created);
 
       const logger = createFakeLogger();
-      const result = executeActions([action], calendarIds, logger);
+      const result = executeActions([action], calendarIds, logger, emptyResult());
 
       expect(createTaskMock).toHaveBeenCalledTimes(1);
       expect(createTaskMock).toHaveBeenCalledWith(buildTodoistTaskPayload(source));
@@ -164,7 +169,7 @@ describe('executeActions', () => {
       const action: SyncAction = { kind: 'create', rule: 'S4', direction: 'P→T', calendar: 'todoist', source };
 
       const logger = createFakeLogger();
-      expect(() => executeActions([action], calendarIds, logger)).toThrow();
+      expect(() => executeActions([action], calendarIds, logger, emptyResult())).toThrow();
       expect(createTaskMock).not.toHaveBeenCalled();
     });
 
@@ -173,7 +178,7 @@ describe('executeActions', () => {
       const action: SyncAction = { kind: 'create', rule: 'S4', direction: 'P→T', calendar: 'todoist', source };
 
       const logger = createFakeLogger();
-      expect(() => executeActions([action], calendarIds, logger)).toThrow();
+      expect(() => executeActions([action], calendarIds, logger, emptyResult())).toThrow();
       expect(createTaskMock).not.toHaveBeenCalled();
     });
   });
@@ -193,7 +198,7 @@ describe('executeActions', () => {
       patchEventMock.mockReturnValue(timedEvent());
 
       const logger = createFakeLogger();
-      const result = executeActions([action], calendarIds, logger);
+      const result = executeActions([action], calendarIds, logger, emptyResult());
 
       expect(patchEventMock).toHaveBeenCalledTimes(1);
       expect(patchEventMock).toHaveBeenCalledWith(
@@ -216,7 +221,7 @@ describe('executeActions', () => {
       const action: SyncAction = { kind: 'update', rule: 'S2', direction: 'T→P', calendar: 'primary', source, target };
 
       const logger = createFakeLogger();
-      expect(() => executeActions([action], calendarIds, logger)).toThrow();
+      expect(() => executeActions([action], calendarIds, logger, emptyResult())).toThrow();
       expect(patchEventMock).not.toHaveBeenCalled();
     });
   });
@@ -235,7 +240,7 @@ describe('executeActions', () => {
       updateTaskMock.mockReturnValue(fakeTask({ id: 'task-to-update' }));
 
       const logger = createFakeLogger();
-      const result = executeActions([action], calendarIds, logger);
+      const result = executeActions([action], calendarIds, logger, emptyResult());
 
       expect(updateTaskMock).toHaveBeenCalledTimes(1);
       expect(updateTaskMock).toHaveBeenCalledWith('task-to-update', buildTodoistTaskPayload(source));
@@ -262,7 +267,7 @@ describe('executeActions', () => {
       };
 
       const logger = createFakeLogger();
-      expect(() => executeActions([action], calendarIds, logger)).toThrow();
+      expect(() => executeActions([action], calendarIds, logger, emptyResult())).toThrow();
       expect(updateTaskMock).not.toHaveBeenCalled();
     });
   });
@@ -280,7 +285,7 @@ describe('executeActions', () => {
       };
 
       const logger = createFakeLogger();
-      const result = executeActions([action], calendarIds, logger);
+      const result = executeActions([action], calendarIds, logger, emptyResult());
 
       expect(removeEventMock).toHaveBeenCalledTimes(1);
       expect(removeEventMock).toHaveBeenCalledWith('primary-calendar-id', 'target-delete-1');
@@ -303,7 +308,7 @@ describe('executeActions', () => {
         target: missingId,
         srcUid: 'src@example.com',
       };
-      expect(() => executeActions([actionMissingId], calendarIds, createFakeLogger())).toThrow();
+      expect(() => executeActions([actionMissingId], calendarIds, createFakeLogger(), emptyResult())).toThrow();
 
       const missingUid = timedEvent({ id: 'target-id', iCalUID: undefined });
       const actionMissingUid: SyncAction = {
@@ -314,7 +319,7 @@ describe('executeActions', () => {
         target: missingUid,
         srcUid: 'src@example.com',
       };
-      expect(() => executeActions([actionMissingUid], calendarIds, createFakeLogger())).toThrow();
+      expect(() => executeActions([actionMissingUid], calendarIds, createFakeLogger(), emptyResult())).toThrow();
       expect(removeEventMock).not.toHaveBeenCalled();
     });
   });
@@ -331,7 +336,7 @@ describe('executeActions', () => {
       };
 
       const logger = createFakeLogger();
-      const result = executeActions([action], calendarIds, logger);
+      const result = executeActions([action], calendarIds, logger, emptyResult());
 
       expect(removeTaskMock).toHaveBeenCalledTimes(1);
       expect(removeTaskMock).toHaveBeenCalledWith('task-to-delete');
@@ -356,7 +361,7 @@ describe('executeActions', () => {
         srcUid: 'src-dup@example.com',
       };
 
-      const result = executeActions([action], calendarIds, createFakeLogger());
+      const result = executeActions([action], calendarIds, createFakeLogger(), emptyResult());
 
       expect(removeTaskMock).toHaveBeenCalledWith('task-dup');
       expect(result.deletedKeys).toEqual(['todoist:task-dup']);
@@ -376,7 +381,7 @@ describe('executeActions', () => {
     patchEventMock.mockReturnValue(timedEvent());
 
     const logger = createFakeLogger();
-    const result = executeActions([action], calendarIds, logger);
+    const result = executeActions([action], calendarIds, logger, emptyResult());
 
     expect(patchEventMock).toHaveBeenCalledTimes(1);
     expect(patchEventMock).toHaveBeenCalledWith(
@@ -402,7 +407,7 @@ describe('executeActions', () => {
       target,
       srcUid: 'src@example.com',
     };
-    expect(() => executeActions([action], calendarIds, createFakeLogger())).toThrow();
+    expect(() => executeActions([action], calendarIds, createFakeLogger(), emptyResult())).toThrow();
     expect(patchEventMock).not.toHaveBeenCalled();
   });
 
@@ -420,7 +425,7 @@ describe('executeActions', () => {
     patchEventMock.mockReturnValue(timedEvent());
 
     const logger = createFakeLogger();
-    const result = executeActions([action], calendarIds, logger);
+    const result = executeActions([action], calendarIds, logger, emptyResult());
 
     expect(patchEventMock).toHaveBeenCalledTimes(1);
     expect(patchEventMock).toHaveBeenCalledWith(
@@ -449,7 +454,7 @@ describe('executeActions', () => {
       srcUid: 'src@example.com',
       linkKind: 'generated',
     };
-    expect(() => executeActions([action], calendarIds, createFakeLogger())).toThrow();
+    expect(() => executeActions([action], calendarIds, createFakeLogger(), emptyResult())).toThrow();
     expect(patchEventMock).not.toHaveBeenCalled();
   });
 
@@ -503,7 +508,7 @@ describe('executeActions', () => {
     };
 
     const logger = createFakeLogger();
-    executeActions([createAction, updateAction, deleteAction, todoistDeleteAction], calendarIds, logger);
+    executeActions([createAction, updateAction, deleteAction, todoistDeleteAction], calendarIds, logger, emptyResult());
 
     expect(callOrder).toEqual(['insert', 'patch', 'remove', 'removeTask']);
     expect(logger.calls.map((call) => call.uid)).toEqual([
@@ -537,10 +542,58 @@ describe('executeActions', () => {
     };
 
     const logger = createFakeLogger();
-    expect(() => executeActions([createAction, updateAction], calendarIds, logger)).toThrow('API failure');
+    expect(() => executeActions([createAction, updateAction], calendarIds, logger, emptyResult())).toThrow('API failure');
 
     expect(logger.calls).toHaveLength(1);
     expect(logger.calls[0].uid).toBe('midway-src-1@example.com');
     expect(removeEventMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps the createdLinks recorded before a later action throws, in the result passed by the caller', () => {
+    insertEventMock.mockReturnValue({ iCalUID: 'generated-before-throw@example.com' });
+    createTaskMock.mockReturnValue(fakeTask({ id: 'task-before-throw' }));
+    patchEventMock.mockImplementation(() => {
+      throw new Error('API failure');
+    });
+
+    const createEventAction: SyncAction = {
+      kind: 'create',
+      rule: 'S1',
+      direction: 'T→P',
+      calendar: 'primary',
+      source: timedEvent({ iCalUID: 'before-throw-src-1@example.com' }),
+    };
+    const createTaskAction: SyncAction = {
+      kind: 'create',
+      rule: 'S4',
+      direction: 'P→T',
+      calendar: 'todoist',
+      source: timedEvent({ iCalUID: 'before-throw-src-2@example.com' }),
+    };
+    const updateAction: SyncAction = {
+      kind: 'update',
+      rule: 'S2',
+      direction: 'T→P',
+      calendar: 'primary',
+      source: timedEvent({ iCalUID: 'before-throw-src-3@example.com' }),
+      target: timedEvent({ id: 'before-throw-target-3' }),
+    };
+
+    const result = emptyResult();
+    expect(() =>
+      executeActions([createEventAction, createTaskAction, updateAction], calendarIds, createFakeLogger(), result),
+    ).toThrow('API failure');
+
+    // update で throw する前に成功した 2 件の create は、呼び出し元が渡した result にそのまま残る。
+    expect(result.createdLinks).toEqual([
+      { calendar: 'primary', iCalUID: 'generated-before-throw@example.com', srcUid: 'before-throw-src-1@example.com', kind: 'generated' },
+      {
+        calendar: 'todoist',
+        iCalUID: '',
+        srcUid: 'before-throw-src-2@example.com',
+        kind: 'generated',
+        todoistTaskId: 'task-before-throw',
+      },
+    ]);
   });
 });

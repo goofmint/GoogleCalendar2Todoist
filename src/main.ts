@@ -18,7 +18,7 @@ import { planInitialMatch } from './initialMatcher';
 import { excludeOwnTaskMirrors, planSync, resolveTodoistTaskLinks } from './syncPlanner';
 import { executeActions } from './actionExecutor';
 import { planLinks } from './linksPlanner';
-import type { CalendarEvent, CalendarRole, LinkEntry, SyncAction } from './types';
+import type { CalendarEvent, CalendarRole, ExecutionResultAccumulator, LinkEntry, SyncAction } from './types';
 
 type MarkAction = SyncAction & { kind: 'mark' };
 
@@ -156,21 +156,28 @@ export function sync(): void {
       primary: PRIMARY_CALENDAR_ID,
       todoist: settings.todoistCalendarId,
     };
-    const result = executeActions(actions, calendarIds, logger);
+    // executeActions には可変の result を渡し、途中で action が throw しても、そこまでに成功した
+    // create/delete を result に残す。Todoist タスクには calendar イベントの srcUid のような
+    // 自己修復手段が無いため、finally で必ず links に反映しないと次回 S4 が再発生し重複作成される。
+    const result: ExecutionResultAccumulator = { createdLinks: [], deletedKeys: [] };
+    try {
+      executeActions(actions, calendarIds, logger, result);
+    } finally {
+      const observed = [
+        ...todoist.observedLinks,
+        ...primary.observedLinks,
+        ...resolved.observed,
+        ...keptInactiveLinkObserved,
+        ...markedLinksFromActions(actions),
+      ];
 
-    const observed = [
-      ...todoist.observedLinks,
-      ...primary.observedLinks,
-      ...resolved.observed,
-      ...keptInactiveLinkObserved,
-      ...markedLinksFromActions(actions),
-    ];
-
-    const { entries, changed } = planLinks({ current: links, observed, result, now });
-    if (changed) {
-      writeLinks(entries);
+      const { entries, changed } = planLinks({ current: links, observed, result, now });
+      if (changed) {
+        writeLinks(entries);
+      }
     }
 
+    // ここに到達するのは executeActions が例外を投げなかった（全 action が成功した）ときだけ。
     if (isInitialRun) {
       markInitialMatchDone(now);
     }

@@ -273,6 +273,13 @@ export type ExecutionResult = {
   deletedKeys: ReadonlyArray<string>;  // primary/paired 系は `${calendar}:${iCalUID}`、todoist の generated 系は `todoist:${todoistTaskId}`
 };
 
+// executeActions が action を実行するたびに書き込む可変な入れ物。呼び出し元（main.ts の sync）が
+// 事前に生成して渡し、途中で例外が発生してもそこまでの進捗を読み取れるようにする（本改訂で追加）。
+export type ExecutionResultAccumulator = {
+  createdLinks: Omit<LinkEntry, 'recordedAt'>[];
+  deletedKeys: string[];
+};
+
 export type Settings = {
   todoistCalendarId: string;
   initialMatchDoneAt: string | null;  // 空欄なら未実施。値の有無で判定するだけで、代わりの値で補うことはしない
@@ -518,7 +525,8 @@ export function executeActions(
   actions: ReadonlyArray<SyncAction>,
   calendarIds: Record<CalendarRole, string>,
   logger: Logger,
-): ExecutionResult;
+  result: ExecutionResultAccumulator,  // 呼び出し元が生成し渡す。action 成功のたびに逐次書き込む（本改訂で追加）
+): ExecutionResult;  // 戻り値は引数 result と同一の参照
 ```
 
 | kind | calendar | API | ログ |
@@ -533,6 +541,8 @@ export function executeActions(
 | repair | primary/todoist | `patchEvent(buildRepairResource)` | **WARN** / REPAIR |
 
 `action.kind` と `action.calendar` の分岐で `todoistGateway` へ振り分ける（本改訂で追加）。`primary` の場合は従来どおり `calendarGateway` を呼ぶ。Calendar 前提の `requireId`/`requireICalUID` は `todoist` の update/delete には適用しない（`CalendarEvent` を持たないため）。
+
+`createdLinks`/`deletedKeys` は呼び出し元から渡された `result`（`ExecutionResultAccumulator`）が持つ配列そのものへ push する（本改訂で変更）。途中の action が例外を投げても、それまでに成功した action の分は `result` に残る。Todoist タスクの `generated` 行は `links` の `todoistTaskId` が唯一の記録で、calendar イベントの `srcUid` のような自己修復手段が無いため、`main.ts` 側はこの `result` を使って例外発生時にも `links` を更新し、次回実行での S4 の再発生（Todoist タスクの重複作成）を防ぐ。
 
 #### main.ts（公開関数）
 
@@ -584,11 +594,19 @@ try:
       t: mirrorExclusion.origins, n: todoistTaskOrigins, m: primary.generated, c: resolved.generated,
     })]
 
-  result = executeActions(actions, ids, logger)
-  observed = [...todoist.observedLinks, ...primary.observedLinks, ...resolved.observed,
-              ...keptInactiveObserved, ...markedLinksFromActions(actions)]
-  {entries, changed} = planLinks({current: links, observed, result, now})
-  if changed: writeLinks(entries)
+  # result は sync 側で用意し、executeActions に可変の入れ物として渡す（本改訂で変更）。
+  # action の途中で throw されても、ここまでの createdLinks/deletedKeys が result に残る。
+  result = { createdLinks: [], deletedKeys: [] }
+  try:
+    executeActions(actions, ids, logger, result)
+  finally:
+    # try が例外で抜けた場合でも、ここで result に残っている進捗分だけ links に反映する。
+    observed = [...todoist.observedLinks, ...primary.observedLinks, ...resolved.observed,
+                ...keptInactiveObserved, ...markedLinksFromActions(actions)]
+    {entries, changed} = planLinks({current: links, observed, result, now})
+    if changed: writeLinks(entries)
+
+  # ここに到達するのは executeActions が例外を投げなかった（全 action が成功した）ときだけ。
   if 初回: markInitialMatchDone(now)   // 通常同期は次回から行う
 finally:
   logger.flush()
@@ -597,7 +615,7 @@ finally:
 
 - `catch` は書かない。例外は `finally` を通ってそのまま外に出る
 - 差分がなければ actions が空、links も変わらず、ログも 0 件になり、書き込みは発生しない
-- 途中で throw されたり時間切れになったりして `links` の更新が漏れても、次回の実行で `srcUid` を持つイベントから復元される（`observedLinks`）。P→T 側の対応は `links` の `todoistTaskId` 行が唯一の記録であるため、この行が失われると復元できない（R9。calendar イベントの `extendedProperties` のような自己修復手段が無い）
+- action 実行中に throw されても、内側の `finally` で `result` に残っている進捗（成功済みの create/delete）が `links` に反映されるため、次回実行時に S4（Todoist タスク作成）が再発生して重複作成されることはない（本改訂で修正。P→T 側の対応は `links` の `todoistTaskId` 行が唯一の記録であり、calendar イベントの `extendedProperties` のような自己修復手段が無いため）。`markInitialMatchDone` は内側の `finally` の外側にあり、全 action が成功したときにしか呼ばれない
 
 **`cleanupLegacyTodoistCopies`（本改訂で追加。手動実行専用）**: `listFutureEvents(todoistCalendarId, now)` の中から、`getSrcUid(event) !== null && !isInitialMatched(event)` かつ `links` に `(calendar: 'todoist', iCalUID, kind: 'generated')` の対応行があるイベントだけを `removeEvent` で削除し、対応する links 行を取り除く。`srcUid` を持たない（本物の Todoist タスクのイベント）、または `initialMatch` を持つ（ペア）イベントは、条件に合致しても絶対に削除しない。通常の `sync` からは呼ばれない。
 

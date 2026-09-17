@@ -461,4 +461,22 @@ describe('isSameTodoistTaskContent', () => {
     const task = fakeTodoistTask({ due: { date: '2026-09-15T01:00:00Z', timezone: null } });
     expect(isSameTodoistTaskContent(source, task)).toBe(false);
   });
+
+  it('returns true when task.due.date is the same UTC instant but with fractional seconds', () => {
+    const source = timedEvent({ start: { dateTime: '2026-09-15T10:00:00+09:00' } });
+    const task = fakeTodoistTask({ due: { date: '2026-09-15T01:00:00.000000Z', timezone: null } });
+    expect(isSameTodoistTaskContent(source, task)).toBe(true);
+  });
+
+  it('returns false when task.due.date is a different UTC instant', () => {
+    const source = timedEvent({ start: { dateTime: '2026-09-15T10:00:00+09:00' } });
+    const task = fakeTodoistTask({ due: { date: '2026-09-15T01:00:01.000000Z', timezone: null } });
+    expect(isSameTodoistTaskContent(source, task)).toBe(false);
+  });
+
+  it('returns false when task.due.date is a floating datetime (no trailing Z), even at the same instant', () => {
+    const source = timedEvent({ start: { dateTime: '2026-09-15T10:00:00+09:00' } });
+    const task = fakeTodoistTask({ due: { date: '2026-09-15T01:00:00', timezone: 'UTC' } });
+    expect(isSameTodoistTaskContent(source, task)).toBe(false);
+  });
 });

@@ -25,6 +25,7 @@ export type TodoistTaskPayload = {
 
 /**
  * スクリプトプロパティから Todoist API トークンを読む。未設定・空文字なら明確に throw する。
+ * 前後の空白・改行が混入していても認証ヘッダーに影響しないよう、trim した値を返す。
  */
 function getApiToken(): string {
   const token = PropertiesService.getScriptProperties().getProperty(TODOIST_API_TOKEN_PROPERTY_KEY);
@@ -33,7 +34,7 @@ function getApiToken(): string {
       `スクリプトプロパティ "${TODOIST_API_TOKEN_PROPERTY_KEY}" に Todoist API トークンが設定されていません。`,
     );
   }
-  return token;
+  return token.trim();
 }
 
 /**
