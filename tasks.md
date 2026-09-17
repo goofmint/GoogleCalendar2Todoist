@@ -5,7 +5,7 @@
 
 ## 概要
 
-- 総タスク数: 16
+- 総タスク数: 17
 - 推定作業時間: 約 5 日（事前検証の待ち時間は含まない）
 - 優先度: 高
 - 最重要の経路: Task 1.1（公式連携の検証）の結果しだいで、設計を見直す可能性がある。Phase 2 のうち eventContent と actionExecutor は、この結果が出てから確定させる
@@ -122,6 +122,17 @@
 - **依存**: Task 2.5, 2.6, 2.8
 - **推定時間**: 1.5h
 
+#### Task 2.10: 全回終了済みの繰り返し系列を起点から除外する（D8 / R7）
+
+- [ ] `config.ts` に `INSTANCE_LOOKUP_MAX_RESULTS` を追加する
+- [ ] `calendarGateway.ts` に `hasFutureInstance(calendarId, eventId, now)` を追加する（`Calendar.Events.instances` を呼ぶ）
+- [ ] `eventClassifier.ts` の `classify()` に `hasFutureOccurrence` を注入する引数を追加し、ルール8（起点確定）の直前で、`recurrence` を持つ起点候補のうち未来回がないものを除外する。生成物（ルール4・5）には適用しない
+- [ ] `main.ts` で `hasFutureInstance` をカレンダーごとのクロージャにして `classify()` に渡す
+- [ ] テスト: `hasFutureInstance` の未来回あり／なし、`classify()` の除外・非除外・生成物への非適用、`main.ts` での配線
+- **完了条件**: テストがすべて通る。`requirements.md`「同期範囲」（過去は対象外）どおり、全回終了済みの繰り返し系列が起点（T/N）に含まれない
+- **依存**: Task 2.3、Task 2.9（設計は `design.md` D8 / R7 を参照。要件は `requirements.md` の「同期範囲」節を参照）
+- **推定時間**: 1.5h
+
 ### Phase 3: 検証・テスト（テスト用アカウントで行う）
 
 #### Task 3.1: 初回照合のシナリオ
@@ -189,6 +200,8 @@
             ├─ 2.6 ────────────────┼─ 2.9 ─ 3.1 ─ 3.2 ─ 3.3 ─ 4.1 ─ 4.2
             └─ 2.7 ─ 2.8 ──────────┘
 ```
+
+- Task 2.10（D8/R7 の修正）は Task 2.3・2.9 の後に追加されたタスクで、上図には含めていない
 
 ## リスクと対策
 

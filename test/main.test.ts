@@ -4,7 +4,7 @@ import { PRIMARY_CALENDAR_ID, TRIGGER_HANDLER, TRIGGER_INTERVAL_MINUTES } from '
 import { ensureSheets, markInitialMatchDone, readSettings } from '../src/settingsRepository';
 import { readLinks, writeLinks } from '../src/linksRepository';
 import { createLogger } from '../src/logger';
-import { listFutureEvents } from '../src/calendarGateway';
+import { hasFutureInstance, listFutureEvents } from '../src/calendarGateway';
 import { classify } from '../src/eventClassifier';
 import { planInitialMatch } from '../src/initialMatcher';
 import { planSync } from '../src/syncPlanner';
@@ -28,6 +28,7 @@ vi.mock('../src/logger', () => ({
 }));
 vi.mock('../src/calendarGateway', () => ({
   listFutureEvents: vi.fn(),
+  hasFutureInstance: vi.fn(),
 }));
 vi.mock('../src/eventClassifier', () => ({
   classify: vi.fn(),
@@ -52,6 +53,7 @@ const readLinksMock = vi.mocked(readLinks);
 const writeLinksMock = vi.mocked(writeLinks);
 const createLoggerMock = vi.mocked(createLogger);
 const listFutureEventsMock = vi.mocked(listFutureEvents);
+const hasFutureInstanceMock = vi.mocked(hasFutureInstance);
 const classifyMock = vi.mocked(classify);
 const planInitialMatchMock = vi.mocked(planInitialMatch);
 const planSyncMock = vi.mocked(planSync);
@@ -142,6 +144,7 @@ beforeEach(() => {
   readSettingsMock.mockReturnValue(fakeSettings());
   readLinksMock.mockReturnValue([]);
   listFutureEventsMock.mockReturnValue([]);
+  hasFutureInstanceMock.mockReturnValue(true);
   classifyMock.mockImplementation(() => fakeClassified());
   planSyncMock.mockReturnValue([]);
   planInitialMatchMock.mockReturnValue({ actions: [], ambiguousKeys: [] });
@@ -204,6 +207,36 @@ describe('sync', () => {
     sync();
 
     expect(writeLinksMock).not.toHaveBeenCalled();
+  });
+
+  it('passes a hasFutureOccurrence closure to classify that calls hasFutureInstance with the calendar id, event id, and now', () => {
+    readSettingsMock.mockReturnValue(fakeSettings({ todoistCalendarId: 'todoist-cal-id' }));
+
+    sync();
+
+    expect(classifyMock).toHaveBeenCalledTimes(2);
+    const [todoistCall, primaryCall] = classifyMock.mock.calls;
+    expect(todoistCall[0]).toBe('todoist');
+    expect(primaryCall[0]).toBe('primary');
+
+    const todoistHasFutureOccurrence = todoistCall[3];
+    const primaryHasFutureOccurrence = primaryCall[3];
+    const event: CalendarEvent = { id: 'event-1' };
+
+    todoistHasFutureOccurrence(event);
+    expect(hasFutureInstanceMock).toHaveBeenCalledWith('todoist-cal-id', 'event-1', expect.any(Date));
+
+    hasFutureInstanceMock.mockClear();
+    primaryHasFutureOccurrence(event);
+    expect(hasFutureInstanceMock).toHaveBeenCalledWith(PRIMARY_CALENDAR_ID, 'event-1', expect.any(Date));
+  });
+
+  it('throws when the event passed to the hasFutureOccurrence closure has no id', () => {
+    sync();
+
+    const [todoistCall] = classifyMock.mock.calls;
+    const todoistHasFutureOccurrence = todoistCall[3];
+    expect(() => todoistHasFutureOccurrence({})).toThrow();
   });
 
   it('runs the initial match via planInitialMatch, logs WARN for ambiguous keys, includes mark rows as paired in observed, and marks the initial match done', () => {

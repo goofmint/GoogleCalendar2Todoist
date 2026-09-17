@@ -37,6 +37,15 @@ export function isRecurringException(event: CalendarEvent): boolean {
 }
 
 /**
+ * event.recurrence が非空の配列かどうかを判定する（D8）。繰り返し起点候補だけを
+ * hasFutureOccurrence の判定対象にするための述語。isRecurringException と同じく
+ * 本モジュール内に独立して置く。
+ */
+function hasNonEmptyRecurrence(event: CalendarEvent): boolean {
+  return Array.isArray(event.recurrence) && event.recurrence.length > 0;
+}
+
+/**
  * 自分（self: true の attendee）が辞退しているかどうかを判定する。
  * attendees が未定義、または self の要素が無いときは false を返す。
  */
@@ -121,7 +130,11 @@ function buildRepairAction(
  * 5. srcUid あり → 生成物
  * 6. primary かつ eventType が ORIGIN_EVENT_TYPES にない（D3） → 対象外
  * 7. primary かつ自分が辞退している → 対象外
- * 8. 上記以外 → 起点
+ * 8. 上記以外 → 起点。ただし recurrence を持つ起点候補は、hasFutureOccurrence が偽なら
+ *    起点から除外する（D8）。生成物（ルール4・5）には適用しない
+ *
+ * `hasFutureOccurrence` は、繰り返し予定に未来の回が残っているかどうかを呼び出し元が注入する。
+ * classify() 自体は GAS グローバルを直接呼ばない（純粋性を保つ）。
  *
  * 戻り値の各配列は入力順を保つ。引数の events / links は変更しない。
  */
@@ -129,6 +142,7 @@ export function classify(
   calendar: CalendarRole,
   events: ReadonlyArray<CalendarEvent>,
   links: ReadonlyArray<LinkEntry>,
+  hasFutureOccurrence: (event: CalendarEvent) => boolean,
 ): ClassifiedEvents {
   const linksIndex = buildLinksIndex(links);
 
@@ -199,7 +213,13 @@ export function classify(
       continue;
     }
 
-    // ルール8: 上記のいずれにも当てはまらなければ起点
+    // ルール8: 上記のいずれにも当てはまらなければ起点。
+    // ただし recurrence を持つ起点候補は、未来回が残っていなければ除外する（D8）。
+    // 生成物（ルール4・5）には適用しない。除外した起点の生成物は origins から欠落するため、
+    // reconcile() の S3/S6 の孤児削除により自動的に消える。
+    if (hasNonEmptyRecurrence(event) && !hasFutureOccurrence(event)) {
+      continue;
+    }
     origins.push(event);
   }
 

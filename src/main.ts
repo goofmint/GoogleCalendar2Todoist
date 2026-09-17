@@ -11,18 +11,30 @@ import { LOCK_WAIT_MS, PRIMARY_CALENDAR_ID, TRIGGER_HANDLER, TRIGGER_INTERVAL_MI
 import { ensureSheets, markInitialMatchDone, readSettings } from './settingsRepository';
 import { readLinks, writeLinks } from './linksRepository';
 import { createLogger } from './logger';
-import { listFutureEvents } from './calendarGateway';
+import { hasFutureInstance, listFutureEvents } from './calendarGateway';
 import { classify } from './eventClassifier';
 import { planInitialMatch } from './initialMatcher';
 import { planSync } from './syncPlanner';
 import { executeActions } from './actionExecutor';
 import { planLinks } from './linksPlanner';
-import type { CalendarRole, LinkEntry, SyncAction } from './types';
+import type { CalendarEvent, CalendarRole, LinkEntry, SyncAction } from './types';
 
 type MarkAction = SyncAction & { kind: 'mark' };
 
 function isMarkAction(action: SyncAction): action is MarkAction {
   return action.kind === 'mark';
+}
+
+/**
+ * event.id を検証して返す。非空文字列でなければ throw する（フォールバックしない）。
+ * hasFutureInstance の呼び出しに使う。
+ */
+function requireEventId(event: CalendarEvent): string {
+  const id = event.id;
+  if (typeof id !== 'string' || id.length === 0) {
+    throw new Error('未来回判定の対象の予定に id がありません。');
+  }
+  return id;
 }
 
 /**
@@ -66,8 +78,18 @@ export function sync(): void {
     const isInitialRun = settings.initialMatchDoneAt === null;
     const now = new Date();
 
-    const todoist = classify('todoist', listFutureEvents(settings.todoistCalendarId, now), links);
-    const primary = classify('primary', listFutureEvents(PRIMARY_CALENDAR_ID, now), links);
+    const todoist = classify(
+      'todoist',
+      listFutureEvents(settings.todoistCalendarId, now),
+      links,
+      (event) => hasFutureInstance(settings.todoistCalendarId, requireEventId(event), now),
+    );
+    const primary = classify(
+      'primary',
+      listFutureEvents(PRIMARY_CALENDAR_ID, now),
+      links,
+      (event) => hasFutureInstance(PRIMARY_CALENDAR_ID, requireEventId(event), now),
+    );
     const repairs = [...todoist.repairs, ...primary.repairs];
 
     let actions: SyncAction[];

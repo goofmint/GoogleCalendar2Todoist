@@ -11,6 +11,7 @@ export const PRIMARY_CALENDAR_ID = 'primary';
 export const TRIGGER_INTERVAL_MINUTES = 5;
 export const LOCK_WAIT_MS = 1000;
 export const LIST_PAGE_SIZE = 2500;
+export const INSTANCE_LOOKUP_MAX_RESULTS = 1;
 export const SEND_UPDATES = 'none' as const;
 export const SHEET_SETTINGS = 'settings';
 export const SHEET_LOG = 'log';
