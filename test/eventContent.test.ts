@@ -7,8 +7,11 @@ import {
   buildUpdateResource,
   buildMarkResource,
   buildRepairResource,
+  buildTodoistTaskPayload,
+  isSameTodoistTaskContent,
+  hasNonEmptyRecurrence,
 } from '../src/eventContent';
-import { CalendarEvent } from '../src/types';
+import { CalendarEvent, TodoistTask } from '../src/types';
 import { SRC_UID_KEY, INITIAL_MATCH_KEY, INITIAL_MATCH_VALUE } from '../src/config';
 
 function timedEvent(overrides: Partial<CalendarEvent> = {}): CalendarEvent {
@@ -357,5 +360,105 @@ describe('buildRepairResource', () => {
         },
       },
     });
+  });
+});
+
+describe('hasNonEmptyRecurrence', () => {
+  it('returns false when recurrence is absent', () => {
+    expect(hasNonEmptyRecurrence(timedEvent({ recurrence: undefined }))).toBe(false);
+  });
+
+  it('returns false when recurrence is an empty array', () => {
+    expect(hasNonEmptyRecurrence(timedEvent({ recurrence: [] }))).toBe(false);
+  });
+
+  it('returns true when recurrence has at least one rule', () => {
+    expect(hasNonEmptyRecurrence(timedEvent({ recurrence: ['RRULE:FREQ=WEEKLY'] }))).toBe(true);
+  });
+});
+
+function fakeTodoistTask(overrides: Partial<TodoistTask> = {}): TodoistTask {
+  return { id: 'task-1', content: 'Meeting', due: { date: '2026-09-15T01:00:00Z', timezone: null }, ...overrides };
+}
+
+describe('buildTodoistTaskPayload', () => {
+  it('maps summary to content and a timed start to a UTC due_datetime', () => {
+    const source = timedEvent({
+      summary: 'Meeting',
+      start: { dateTime: '2026-09-15T10:00:00+09:00' },
+    });
+    const payload = buildTodoistTaskPayload(source);
+    expect(payload).toEqual({ content: 'Meeting', due_datetime: '2026-09-15T01:00:00Z' });
+  });
+
+  it('converts a non-UTC offset to UTC (Z) for due_datetime', () => {
+    const source = timedEvent({ start: { dateTime: '2026-09-15T10:00:00-05:00' } });
+    const payload = buildTodoistTaskPayload(source);
+    expect(payload.due_datetime).toBe('2026-09-15T15:00:00Z');
+  });
+
+  it('maps an all-day start (date) to due_date verbatim, with no due_datetime', () => {
+    const source = timedEvent({ start: { date: '2026-09-15' }, end: { date: '2026-09-16' } });
+    const payload = buildTodoistTaskPayload(source);
+    expect(payload).toEqual({ content: 'Meeting', due_date: '2026-09-15' });
+    expect(payload.due_datetime).toBeUndefined();
+  });
+
+  it('throws when summary is missing (Todoist requires non-empty content)', () => {
+    const source = timedEvent({ summary: undefined });
+    expect(() => buildTodoistTaskPayload(source)).toThrow();
+  });
+
+  it('throws when summary is an empty string', () => {
+    const source = timedEvent({ summary: '' });
+    expect(() => buildTodoistTaskPayload(source)).toThrow();
+  });
+
+  it('throws when start is missing', () => {
+    const source = timedEvent({ start: undefined });
+    expect(() => buildTodoistTaskPayload(source)).toThrow();
+  });
+
+  it('throws when start has neither date nor dateTime', () => {
+    const source = timedEvent({ start: {} });
+    expect(() => buildTodoistTaskPayload(source)).toThrow();
+  });
+});
+
+describe('isSameTodoistTaskContent', () => {
+  it('returns true when content and due (UTC datetime) match exactly', () => {
+    const source = timedEvent({ summary: 'Meeting', start: { dateTime: '2026-09-15T10:00:00+09:00' } });
+    const task = fakeTodoistTask({ content: 'Meeting', due: { date: '2026-09-15T01:00:00Z', timezone: null } });
+    expect(isSameTodoistTaskContent(source, task)).toBe(true);
+  });
+
+  it('returns true for a matching all-day due_date', () => {
+    const source = timedEvent({ start: { date: '2026-09-15' }, end: { date: '2026-09-16' } });
+    const task = fakeTodoistTask({ due: { date: '2026-09-15', timezone: null } });
+    expect(isSameTodoistTaskContent(source, task)).toBe(true);
+  });
+
+  it('returns false when content differs', () => {
+    const source = timedEvent({ summary: 'New title' });
+    const task = fakeTodoistTask({ content: 'Old title' });
+    expect(isSameTodoistTaskContent(source, task)).toBe(false);
+  });
+
+  it('returns false when due differs', () => {
+    const source = timedEvent({ start: { dateTime: '2026-09-15T10:00:00+09:00' } });
+    const task = fakeTodoistTask({ due: { date: '2026-09-16T01:00:00Z', timezone: null } });
+    expect(isSameTodoistTaskContent(source, task)).toBe(false);
+  });
+
+  it('returns false when the task has no due at all', () => {
+    const source = timedEvent();
+    const task = fakeTodoistTask({ due: null });
+    expect(isSameTodoistTaskContent(source, task)).toBe(false);
+  });
+
+  it('returns false when the source is all-day but the task due is a datetime', () => {
+    const source = timedEvent({ start: { date: '2026-09-15' }, end: { date: '2026-09-16' } });
+    const task = fakeTodoistTask({ due: { date: '2026-09-15T01:00:00Z', timezone: null } });
+    expect(isSameTodoistTaskContent(source, task)).toBe(false);
   });
 });

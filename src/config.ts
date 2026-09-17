@@ -20,3 +20,10 @@ export const SETTING_KEY_TODOIST_CALENDAR_ID = 'todoistCalendarId';
 export const SETTING_KEY_INITIAL_MATCH_DONE_AT = 'initialMatchDoneAt';
 export const ORIGIN_EVENT_TYPES: ReadonlyArray<string> = ['default', 'fromGmail'];
 export const TRIGGER_HANDLER = 'sync';
+
+// Todoist API v1（https://developer.todoist.com/api/v1/）関連の定数。
+// トークンの値そのものはここに置かず、スクリプトプロパティのキー名だけを定数化する。
+export const TODOIST_API_BASE_URL = 'https://api.todoist.com/api/v1';
+export const TODOIST_API_TOKEN_PROPERTY_KEY = 'TODOIST_API_TOKEN';
+// GET /tasks の 1 ページあたりの最大件数（Todoist API の上限）。
+export const TODOIST_TASKS_LIST_LIMIT = 200;

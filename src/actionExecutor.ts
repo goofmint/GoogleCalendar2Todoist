@@ -7,7 +7,14 @@
  */
 
 import { insertEvent, patchEvent, removeEvent } from './calendarGateway';
-import { buildInsertResource, buildUpdateResource, buildMarkResource, buildRepairResource } from './eventContent';
+import { createTask, removeTask, updateTask } from './todoistGateway';
+import {
+  buildInsertResource,
+  buildUpdateResource,
+  buildMarkResource,
+  buildRepairResource,
+  buildTodoistTaskPayload,
+} from './eventContent';
 import { linkKey } from './linksPlanner';
 import type { Logger } from './logger';
 import type { CalendarEvent, CalendarRole, ExecutionResult, LinkEntry, SyncAction } from './types';
@@ -52,6 +59,19 @@ export function executeActions(
     switch (action.kind) {
       case 'create': {
         const sourceUid = requireICalUID(action.source, `create ${action.rule}`);
+        if (action.calendar === 'todoist') {
+          const payload = buildTodoistTaskPayload(action.source);
+          const response = createTask(payload);
+          createdLinks.push({
+            calendar: 'todoist',
+            iCalUID: '',
+            srcUid: sourceUid,
+            kind: 'generated',
+            todoistTaskId: response.id,
+          });
+          logger.info(action.direction, sourceUid, `${action.rule} create todoist task ${response.content}`);
+          break;
+        }
         const resource = buildInsertResource(action.calendar, action.source);
         const response = insertEvent(calendarId, resource);
         const createdUid = requireICalUID(response, `create ${action.rule} response`);
@@ -66,6 +86,12 @@ export function executeActions(
       }
       case 'update': {
         const sourceUid = requireICalUID(action.source, `update ${action.rule}`);
+        if (action.calendar === 'todoist') {
+          const payload = buildTodoistTaskPayload(action.source);
+          updateTask(action.todoistTaskId, payload);
+          logger.info(action.direction, sourceUid, `${action.rule} update todoist task ${action.todoistTaskId}`);
+          break;
+        }
         const targetId = requireId(action.target, `update ${action.rule}`);
         const resource = buildUpdateResource(action.calendar, action.source);
         patchEvent(calendarId, targetId, resource);
@@ -73,6 +99,12 @@ export function executeActions(
         break;
       }
       case 'delete': {
+        if (action.calendar === 'todoist') {
+          removeTask(action.todoistTaskId);
+          deletedKeys.push(linkKey({ calendar: 'todoist', iCalUID: '', todoistTaskId: action.todoistTaskId }));
+          logger.info(action.direction, action.srcUid, `${action.rule} delete todoist task ${action.todoistTaskId}`);
+          break;
+        }
         const targetId = requireId(action.target, `delete ${action.rule}`);
         const targetUid = requireICalUID(action.target, `delete ${action.rule}`);
         removeEvent(calendarId, targetId);

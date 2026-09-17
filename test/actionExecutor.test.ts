@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { executeActions } from '../src/actionExecutor';
 import { insertEvent, patchEvent, removeEvent } from '../src/calendarGateway';
-import { buildInsertResource, buildUpdateResource, buildMarkResource, buildRepairResource } from '../src/eventContent';
+import { createTask, removeTask, updateTask } from '../src/todoistGateway';
+import { buildInsertResource, buildUpdateResource, buildMarkResource, buildRepairResource, buildTodoistTaskPayload } from '../src/eventContent';
 import type { Logger } from '../src/logger';
-import type { CalendarEvent, CalendarRole, Direction, SyncAction } from '../src/types';
+import type { CalendarEvent, CalendarRole, Direction, SyncAction, TodoistTask } from '../src/types';
 
 vi.mock('../src/calendarGateway', () => ({
   insertEvent: vi.fn(),
@@ -11,9 +12,18 @@ vi.mock('../src/calendarGateway', () => ({
   removeEvent: vi.fn(),
 }));
 
+vi.mock('../src/todoistGateway', () => ({
+  createTask: vi.fn(),
+  updateTask: vi.fn(),
+  removeTask: vi.fn(),
+}));
+
 const insertEventMock = vi.mocked(insertEvent);
 const patchEventMock = vi.mocked(patchEvent);
 const removeEventMock = vi.mocked(removeEvent);
+const createTaskMock = vi.mocked(createTask);
+const updateTaskMock = vi.mocked(updateTask);
+const removeTaskMock = vi.mocked(removeTask);
 
 const calendarIds: Record<CalendarRole, string> = {
   primary: 'primary-calendar-id',
@@ -49,6 +59,15 @@ function timedEvent(overrides: Partial<CalendarEvent> = {}): CalendarEvent {
   };
 }
 
+function fakeTask(overrides: Partial<TodoistTask> = {}): TodoistTask {
+  return {
+    id: 'task-1',
+    content: 'Meeting',
+    due: { date: '2026-09-16T01:00:00Z', timezone: null },
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
 });
@@ -62,135 +81,286 @@ describe('executeActions', () => {
     expect(insertEventMock).not.toHaveBeenCalled();
     expect(patchEventMock).not.toHaveBeenCalled();
     expect(removeEventMock).not.toHaveBeenCalled();
+    expect(createTaskMock).not.toHaveBeenCalled();
+    expect(updateTaskMock).not.toHaveBeenCalled();
+    expect(removeTaskMock).not.toHaveBeenCalled();
     expect(logger.calls).toEqual([]);
   });
 
-  it('create: calls insertEvent with buildInsertResource, records createdLinks (kind: generated), logs INFO', () => {
-    const source = timedEvent({ iCalUID: 'src-create@example.com' });
-    const action: SyncAction = { kind: 'create', rule: 'S1', direction: 'T→P', calendar: 'primary', source };
-    insertEventMock.mockReturnValue({ iCalUID: 'generated-1@example.com' });
+  describe('create (primary / S1)', () => {
+    it('calls insertEvent with buildInsertResource, records createdLinks (kind: generated), logs INFO', () => {
+      const source = timedEvent({ iCalUID: 'src-create@example.com' });
+      const action: SyncAction = { kind: 'create', rule: 'S1', direction: 'T→P', calendar: 'primary', source };
+      insertEventMock.mockReturnValue({ iCalUID: 'generated-1@example.com' });
 
-    const logger = createFakeLogger();
-    const result = executeActions([action], calendarIds, logger);
+      const logger = createFakeLogger();
+      const result = executeActions([action], calendarIds, logger);
 
-    expect(insertEventMock).toHaveBeenCalledTimes(1);
-    expect(insertEventMock).toHaveBeenCalledWith('primary-calendar-id', buildInsertResource('primary', source));
-    expect(result.createdLinks).toEqual([
-      { calendar: 'primary', iCalUID: 'generated-1@example.com', srcUid: 'src-create@example.com', kind: 'generated' },
-    ]);
-    expect(result.deletedKeys).toEqual([]);
-    expect(logger.calls).toHaveLength(1);
-    expect(logger.calls[0].level).toBe('INFO');
-    expect(logger.calls[0].direction).toBe('T→P');
-    expect(logger.calls[0].uid).toBe('src-create@example.com');
-    expect(logger.calls[0].message).toContain('S1');
+      expect(insertEventMock).toHaveBeenCalledTimes(1);
+      expect(insertEventMock).toHaveBeenCalledWith('primary-calendar-id', buildInsertResource('primary', source));
+      expect(createTaskMock).not.toHaveBeenCalled();
+      expect(result.createdLinks).toEqual([
+        { calendar: 'primary', iCalUID: 'generated-1@example.com', srcUid: 'src-create@example.com', kind: 'generated' },
+      ]);
+      expect(result.deletedKeys).toEqual([]);
+      expect(logger.calls).toHaveLength(1);
+      expect(logger.calls[0].level).toBe('INFO');
+      expect(logger.calls[0].direction).toBe('T→P');
+      expect(logger.calls[0].uid).toBe('src-create@example.com');
+      expect(logger.calls[0].message).toContain('S1');
+    });
+
+    it('throws when the insertEvent response has no iCalUID', () => {
+      const source = timedEvent({ iCalUID: 'src-create-2@example.com' });
+      const action: SyncAction = { kind: 'create', rule: 'S1', direction: 'T→P', calendar: 'primary', source };
+      insertEventMock.mockReturnValue({});
+
+      const logger = createFakeLogger();
+      expect(() => executeActions([action], calendarIds, logger)).toThrow();
+    });
+
+    it('throws before calling insertEvent when the source has no iCalUID', () => {
+      const source = timedEvent({ iCalUID: undefined });
+      const action: SyncAction = { kind: 'create', rule: 'S1', direction: 'T→P', calendar: 'primary', source };
+
+      const logger = createFakeLogger();
+      expect(() => executeActions([action], calendarIds, logger)).toThrow();
+      expect(insertEventMock).not.toHaveBeenCalled();
+    });
   });
 
-  it('create: throws when the insertEvent response has no iCalUID', () => {
-    const source = timedEvent({ iCalUID: 'src-create-2@example.com' });
-    const action: SyncAction = { kind: 'create', rule: 'S4', direction: 'P→T', calendar: 'todoist', source };
-    insertEventMock.mockReturnValue({});
+  describe('create (todoist / S4)', () => {
+    it('calls todoistGateway.createTask with buildTodoistTaskPayload, records createdLinks with todoistTaskId, logs INFO', () => {
+      const source = timedEvent({ iCalUID: 'src-create-todoist@example.com', summary: 'Meeting from colleague' });
+      const action: SyncAction = { kind: 'create', rule: 'S4', direction: 'P→T', calendar: 'todoist', source };
+      const created = fakeTask({ id: 'created-task-1', content: 'Meeting from colleague' });
+      createTaskMock.mockReturnValue(created);
 
-    const logger = createFakeLogger();
-    expect(() => executeActions([action], calendarIds, logger)).toThrow();
+      const logger = createFakeLogger();
+      const result = executeActions([action], calendarIds, logger);
+
+      expect(createTaskMock).toHaveBeenCalledTimes(1);
+      expect(createTaskMock).toHaveBeenCalledWith(buildTodoistTaskPayload(source));
+      expect(insertEventMock).not.toHaveBeenCalled();
+      expect(result.createdLinks).toEqual([
+        {
+          calendar: 'todoist',
+          iCalUID: '',
+          srcUid: 'src-create-todoist@example.com',
+          kind: 'generated',
+          todoistTaskId: 'created-task-1',
+        },
+      ]);
+      expect(result.deletedKeys).toEqual([]);
+      expect(logger.calls).toHaveLength(1);
+      expect(logger.calls[0].level).toBe('INFO');
+      expect(logger.calls[0].direction).toBe('P→T');
+      expect(logger.calls[0].uid).toBe('src-create-todoist@example.com');
+      expect(logger.calls[0].message).toContain('S4');
+    });
+
+    it('throws before calling createTask when the source has no iCalUID', () => {
+      const source = timedEvent({ iCalUID: undefined });
+      const action: SyncAction = { kind: 'create', rule: 'S4', direction: 'P→T', calendar: 'todoist', source };
+
+      const logger = createFakeLogger();
+      expect(() => executeActions([action], calendarIds, logger)).toThrow();
+      expect(createTaskMock).not.toHaveBeenCalled();
+    });
+
+    it('propagates the error thrown by buildTodoistTaskPayload when the source has no summary', () => {
+      const source = timedEvent({ summary: undefined });
+      const action: SyncAction = { kind: 'create', rule: 'S4', direction: 'P→T', calendar: 'todoist', source };
+
+      const logger = createFakeLogger();
+      expect(() => executeActions([action], calendarIds, logger)).toThrow();
+      expect(createTaskMock).not.toHaveBeenCalled();
+    });
   });
 
-  it('create: throws before calling insertEvent when the source has no iCalUID', () => {
-    const source = timedEvent({ iCalUID: undefined });
-    const action: SyncAction = { kind: 'create', rule: 'S1', direction: 'T→P', calendar: 'primary', source };
+  describe('update (primary / S2)', () => {
+    it('calls patchEvent with buildUpdateResource at target.id, logs INFO with source iCalUID', () => {
+      const source = timedEvent({ iCalUID: 'src-update@example.com', summary: 'Renamed' });
+      const target = timedEvent({ id: 'target-update-1' });
+      const action: SyncAction = {
+        kind: 'update',
+        rule: 'S2',
+        direction: 'T→P',
+        calendar: 'primary',
+        source,
+        target,
+      };
+      patchEventMock.mockReturnValue(timedEvent());
 
-    const logger = createFakeLogger();
-    expect(() => executeActions([action], calendarIds, logger)).toThrow();
-    expect(insertEventMock).not.toHaveBeenCalled();
+      const logger = createFakeLogger();
+      const result = executeActions([action], calendarIds, logger);
+
+      expect(patchEventMock).toHaveBeenCalledTimes(1);
+      expect(patchEventMock).toHaveBeenCalledWith(
+        'primary-calendar-id',
+        'target-update-1',
+        buildUpdateResource('primary', source),
+      );
+      expect(updateTaskMock).not.toHaveBeenCalled();
+      expect(result.createdLinks).toEqual([]);
+      expect(result.deletedKeys).toEqual([]);
+      expect(logger.calls).toHaveLength(1);
+      expect(logger.calls[0].level).toBe('INFO');
+      expect(logger.calls[0].uid).toBe('src-update@example.com');
+      expect(logger.calls[0].message).toContain('S2');
+    });
+
+    it('throws when target.id is missing', () => {
+      const source = timedEvent({ iCalUID: 'src-update-2@example.com' });
+      const target = timedEvent({ id: undefined });
+      const action: SyncAction = { kind: 'update', rule: 'S2', direction: 'T→P', calendar: 'primary', source, target };
+
+      const logger = createFakeLogger();
+      expect(() => executeActions([action], calendarIds, logger)).toThrow();
+      expect(patchEventMock).not.toHaveBeenCalled();
+    });
   });
 
-  it('update: calls patchEvent with buildUpdateResource at target.id, logs INFO with source iCalUID', () => {
-    const source = timedEvent({ iCalUID: 'src-update@example.com', summary: 'Renamed' });
-    const target = timedEvent({ id: 'target-update-1' });
-    const action: SyncAction = {
-      kind: 'update',
-      rule: 'S2',
-      direction: 'T→P',
-      calendar: 'primary',
-      source,
-      target,
-    };
-    patchEventMock.mockReturnValue(timedEvent());
+  describe('update (todoist / S5)', () => {
+    it('calls todoistGateway.updateTask(todoistTaskId, buildTodoistTaskPayload), logs INFO with source iCalUID', () => {
+      const source = timedEvent({ iCalUID: 'src-update-todoist@example.com', summary: 'Updated title' });
+      const action: SyncAction = {
+        kind: 'update',
+        rule: 'S5',
+        direction: 'P→T',
+        calendar: 'todoist',
+        source,
+        todoistTaskId: 'task-to-update',
+      };
+      updateTaskMock.mockReturnValue(fakeTask({ id: 'task-to-update' }));
 
-    const logger = createFakeLogger();
-    const result = executeActions([action], calendarIds, logger);
+      const logger = createFakeLogger();
+      const result = executeActions([action], calendarIds, logger);
 
-    expect(patchEventMock).toHaveBeenCalledTimes(1);
-    expect(patchEventMock).toHaveBeenCalledWith(
-      'primary-calendar-id',
-      'target-update-1',
-      buildUpdateResource('primary', source),
-    );
-    expect(result.createdLinks).toEqual([]);
-    expect(result.deletedKeys).toEqual([]);
-    expect(logger.calls).toHaveLength(1);
-    expect(logger.calls[0].level).toBe('INFO');
-    expect(logger.calls[0].uid).toBe('src-update@example.com');
-    expect(logger.calls[0].message).toContain('S2');
+      expect(updateTaskMock).toHaveBeenCalledTimes(1);
+      expect(updateTaskMock).toHaveBeenCalledWith('task-to-update', buildTodoistTaskPayload(source));
+      expect(patchEventMock).not.toHaveBeenCalled();
+      expect(result.createdLinks).toEqual([]);
+      expect(result.deletedKeys).toEqual([]);
+      expect(logger.calls).toHaveLength(1);
+      expect(logger.calls[0].level).toBe('INFO');
+      expect(logger.calls[0].direction).toBe('P→T');
+      expect(logger.calls[0].uid).toBe('src-update-todoist@example.com');
+      expect(logger.calls[0].message).toContain('S5');
+      expect(logger.calls[0].message).toContain('task-to-update');
+    });
+
+    it('throws before calling updateTask when the source has no iCalUID', () => {
+      const source = timedEvent({ iCalUID: undefined });
+      const action: SyncAction = {
+        kind: 'update',
+        rule: 'S5',
+        direction: 'P→T',
+        calendar: 'todoist',
+        source,
+        todoistTaskId: 'task-x',
+      };
+
+      const logger = createFakeLogger();
+      expect(() => executeActions([action], calendarIds, logger)).toThrow();
+      expect(updateTaskMock).not.toHaveBeenCalled();
+    });
   });
 
-  it('update: throws when target.id is missing', () => {
-    const source = timedEvent({ iCalUID: 'src-update-2@example.com' });
-    const target = timedEvent({ id: undefined });
-    const action: SyncAction = { kind: 'update', rule: 'S5', direction: 'P→T', calendar: 'todoist', source, target };
+  describe('delete (primary / S3, S3D)', () => {
+    it('calls removeEvent(calendarId, target.id), records deletedKeys, logs INFO with srcUid', () => {
+      const target = timedEvent({ id: 'target-delete-1', iCalUID: 'target-uid-delete@example.com' });
+      const action: SyncAction = {
+        kind: 'delete',
+        rule: 'S3',
+        direction: 'T→P',
+        calendar: 'primary',
+        target,
+        srcUid: 'src-delete@example.com',
+      };
 
-    const logger = createFakeLogger();
-    expect(() => executeActions([action], calendarIds, logger)).toThrow();
-    expect(patchEventMock).not.toHaveBeenCalled();
+      const logger = createFakeLogger();
+      const result = executeActions([action], calendarIds, logger);
+
+      expect(removeEventMock).toHaveBeenCalledTimes(1);
+      expect(removeEventMock).toHaveBeenCalledWith('primary-calendar-id', 'target-delete-1');
+      expect(removeTaskMock).not.toHaveBeenCalled();
+      expect(result.deletedKeys).toEqual(['primary:target-uid-delete@example.com']);
+      expect(result.createdLinks).toEqual([]);
+      expect(logger.calls).toHaveLength(1);
+      expect(logger.calls[0].level).toBe('INFO');
+      expect(logger.calls[0].uid).toBe('src-delete@example.com');
+      expect(logger.calls[0].message).toContain('S3');
+    });
+
+    it('throws when target.id or target.iCalUID is missing', () => {
+      const missingId = timedEvent({ id: undefined, iCalUID: 'target-uid@example.com' });
+      const actionMissingId: SyncAction = {
+        kind: 'delete',
+        rule: 'S3',
+        direction: 'T→P',
+        calendar: 'primary',
+        target: missingId,
+        srcUid: 'src@example.com',
+      };
+      expect(() => executeActions([actionMissingId], calendarIds, createFakeLogger())).toThrow();
+
+      const missingUid = timedEvent({ id: 'target-id', iCalUID: undefined });
+      const actionMissingUid: SyncAction = {
+        kind: 'delete',
+        rule: 'S3',
+        direction: 'T→P',
+        calendar: 'primary',
+        target: missingUid,
+        srcUid: 'src@example.com',
+      };
+      expect(() => executeActions([actionMissingUid], calendarIds, createFakeLogger())).toThrow();
+      expect(removeEventMock).not.toHaveBeenCalled();
+    });
   });
 
-  it('delete: calls removeEvent(calendarId, target.id), records deletedKeys, logs INFO with srcUid', () => {
-    const target = timedEvent({ id: 'target-delete-1', iCalUID: 'target-uid-delete@example.com' });
-    const action: SyncAction = {
-      kind: 'delete',
-      rule: 'S3',
-      direction: 'T→P',
-      calendar: 'todoist',
-      target,
-      srcUid: 'src-delete@example.com',
-    };
+  describe('delete (todoist / S6, S6D)', () => {
+    it('calls todoistGateway.removeTask(todoistTaskId), records deletedKeys as todoist:<todoistTaskId>, logs INFO with srcUid', () => {
+      const action: SyncAction = {
+        kind: 'delete',
+        rule: 'S6',
+        direction: 'P→T',
+        calendar: 'todoist',
+        todoistTaskId: 'task-to-delete',
+        srcUid: 'src-delete-todoist@example.com',
+      };
 
-    const logger = createFakeLogger();
-    const result = executeActions([action], calendarIds, logger);
+      const logger = createFakeLogger();
+      const result = executeActions([action], calendarIds, logger);
 
-    expect(removeEventMock).toHaveBeenCalledTimes(1);
-    expect(removeEventMock).toHaveBeenCalledWith('todoist-calendar-id', 'target-delete-1');
-    expect(result.deletedKeys).toEqual(['todoist:target-uid-delete@example.com']);
-    expect(result.createdLinks).toEqual([]);
-    expect(logger.calls).toHaveLength(1);
-    expect(logger.calls[0].level).toBe('INFO');
-    expect(logger.calls[0].uid).toBe('src-delete@example.com');
-    expect(logger.calls[0].message).toContain('S3');
-  });
+      expect(removeTaskMock).toHaveBeenCalledTimes(1);
+      expect(removeTaskMock).toHaveBeenCalledWith('task-to-delete');
+      expect(removeEventMock).not.toHaveBeenCalled();
+      expect(result.deletedKeys).toEqual(['todoist:task-to-delete']);
+      expect(result.createdLinks).toEqual([]);
+      expect(logger.calls).toHaveLength(1);
+      expect(logger.calls[0].level).toBe('INFO');
+      expect(logger.calls[0].direction).toBe('P→T');
+      expect(logger.calls[0].uid).toBe('src-delete-todoist@example.com');
+      expect(logger.calls[0].message).toContain('S6');
+      expect(logger.calls[0].message).toContain('task-to-delete');
+    });
 
-  it('delete: throws when target.id or target.iCalUID is missing', () => {
-    const missingId = timedEvent({ id: undefined, iCalUID: 'target-uid@example.com' });
-    const actionMissingId: SyncAction = {
-      kind: 'delete',
-      rule: 'S6',
-      direction: 'P→T',
-      calendar: 'primary',
-      target: missingId,
-      srcUid: 'src@example.com',
-    };
-    expect(() => executeActions([actionMissingId], calendarIds, createFakeLogger())).toThrow();
+    it('does not require calendarIds.todoist to identify the target (no CalendarEvent involved)', () => {
+      const action: SyncAction = {
+        kind: 'delete',
+        rule: 'S6D',
+        direction: 'P→T',
+        calendar: 'todoist',
+        todoistTaskId: 'task-dup',
+        srcUid: 'src-dup@example.com',
+      };
 
-    const missingUid = timedEvent({ id: 'target-id', iCalUID: undefined });
-    const actionMissingUid: SyncAction = {
-      kind: 'delete',
-      rule: 'S6',
-      direction: 'P→T',
-      calendar: 'primary',
-      target: missingUid,
-      srcUid: 'src@example.com',
-    };
-    expect(() => executeActions([actionMissingUid], calendarIds, createFakeLogger())).toThrow();
-    expect(removeEventMock).not.toHaveBeenCalled();
+      const result = executeActions([action], calendarIds, createFakeLogger());
+
+      expect(removeTaskMock).toHaveBeenCalledWith('task-dup');
+      expect(result.deletedKeys).toEqual(['todoist:task-dup']);
+    });
   });
 
   it('mark: calls patchEvent with buildMarkResource(srcUid), logs INFO with direction INIT and target iCalUID', () => {
@@ -283,7 +453,7 @@ describe('executeActions', () => {
     expect(patchEventMock).not.toHaveBeenCalled();
   });
 
-  it('preserves action order across gateway calls and log entries', () => {
+  it('preserves action order across gateway calls and log entries (mixing primary and todoist actions)', () => {
     const callOrder: string[] = [];
     insertEventMock.mockImplementation(() => {
       callOrder.push('insert');
@@ -295,6 +465,9 @@ describe('executeActions', () => {
     });
     removeEventMock.mockImplementation(() => {
       callOrder.push('remove');
+    });
+    removeTaskMock.mockImplementation(() => {
+      callOrder.push('removeTask');
     });
 
     const createAction: SyncAction = {
@@ -316,19 +489,28 @@ describe('executeActions', () => {
       kind: 'delete',
       rule: 'S3',
       direction: 'T→P',
-      calendar: 'todoist',
+      calendar: 'primary',
       target: timedEvent({ id: 'order-target-3', iCalUID: 'order-target-uid-3@example.com' }),
       srcUid: 'order-src-3@example.com',
     };
+    const todoistDeleteAction: SyncAction = {
+      kind: 'delete',
+      rule: 'S6',
+      direction: 'P→T',
+      calendar: 'todoist',
+      todoistTaskId: 'order-task-4',
+      srcUid: 'order-src-4@example.com',
+    };
 
     const logger = createFakeLogger();
-    executeActions([createAction, updateAction, deleteAction], calendarIds, logger);
+    executeActions([createAction, updateAction, deleteAction, todoistDeleteAction], calendarIds, logger);
 
-    expect(callOrder).toEqual(['insert', 'patch', 'remove']);
+    expect(callOrder).toEqual(['insert', 'patch', 'remove', 'removeTask']);
     expect(logger.calls.map((call) => call.uid)).toEqual([
       'order-src-1@example.com',
       'order-src-2@example.com',
       'order-src-3@example.com',
+      'order-src-4@example.com',
     ]);
   });
 

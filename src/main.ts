@@ -11,10 +11,11 @@ import { LOCK_WAIT_MS, PRIMARY_CALENDAR_ID, TRIGGER_HANDLER, TRIGGER_INTERVAL_MI
 import { ensureSheets, markInitialMatchDone, readSettings } from './settingsRepository';
 import { readLinks, writeLinks } from './linksRepository';
 import { createLogger } from './logger';
-import { hasFutureInstance, listFutureEvents } from './calendarGateway';
-import { classify } from './eventClassifier';
+import { hasFutureInstance, listFutureEvents, removeEvent } from './calendarGateway';
+import { listTasks } from './todoistGateway';
+import { classify, getSrcUid, isInitialMatched } from './eventClassifier';
 import { planInitialMatch } from './initialMatcher';
-import { planSync } from './syncPlanner';
+import { excludeOwnTaskMirrors, planSync, resolveTodoistTaskLinks } from './syncPlanner';
 import { executeActions } from './actionExecutor';
 import { planLinks } from './linksPlanner';
 import type { CalendarEvent, CalendarRole, LinkEntry, SyncAction } from './types';
@@ -92,6 +93,46 @@ export function sync(): void {
     );
     const repairs = [...todoist.repairs, ...primary.repairs];
 
+    // P→T（S4/S5/S6/S6D）は「Todoist」カレンダーの C イベントではなく Todoist API のタスクを対象にする。
+    // links の todoist/generated 行を、現在アクティブなタスク一覧と突き合わせる。
+    const activeTasks = listTasks();
+    const resolved = resolveTodoistTaskLinks({ links, activeTasks });
+
+    // links に対応行があるが、そのタスクが既にユーザーによって完了・削除された（アクティブ一覧に
+    // 無い）場合、対応する N がまだ存在するかどうかで扱いを分ける（要件: 完了・削除したタスクは
+    // 再作成しない。N 自体が消えていれば links 行も掃除する）。
+    //   - N がまだ存在する → S4 を再発生させないため、この N を起点集合から除外し、links 行は残す
+    //   - N も無くなっている → タスクは既に無いので削除アクションは出さず、links 行も残さない（掃除）
+    const nOriginICalUIDs = new Set(
+      primary.origins.map((event) => event.iCalUID).filter((iCalUID): iCalUID is string => typeof iCalUID === 'string'),
+    );
+    const completedTaskSrcUidsWithExistingN = new Set<string>();
+    const keptInactiveLinkObserved: Array<Omit<LinkEntry, 'recordedAt'>> = [];
+    for (const inactive of resolved.inactiveLinks) {
+      if (nOriginICalUIDs.has(inactive.srcUid)) {
+        completedTaskSrcUidsWithExistingN.add(inactive.srcUid);
+        keptInactiveLinkObserved.push(inactive.observedRow);
+      }
+      // else: N も既に無い。observed に含めないことで、この links 行は掃除される。
+    }
+
+    const todoistTaskOrigins = primary.origins.filter((event) => {
+      const iCalUID = event.iCalUID;
+      return !(typeof iCalUID === 'string' && completedTaskSrcUidsWithExistingN.has(iCalUID));
+    });
+
+    // S1 の二重ミラー除外（Assumption 3）: 有効な Todoist タスクを持つ N と同じコンテンツキーの
+    // T 候補は、公式連携による自作タスクの echo とみなして除外する。
+    const activeGeneratedSrcUids = new Set(resolved.generated.map((item) => item.srcUid));
+    const nEventsWithGeneratedTask = todoistTaskOrigins.filter((event) => {
+      const iCalUID = event.iCalUID;
+      return typeof iCalUID === 'string' && activeGeneratedSrcUids.has(iCalUID);
+    });
+    const mirrorExclusion = excludeOwnTaskMirrors(todoist.origins, nEventsWithGeneratedTask);
+    for (const key of mirrorExclusion.ambiguousKeys) {
+      logger.warn('P→T', key, 'todoist mirror exclusion skipped: multiple events share this start/title');
+    }
+
     let actions: SyncAction[];
     if (isInitialRun) {
       const match = planInitialMatch(todoist.origins, primary.origins);
@@ -102,7 +143,12 @@ export function sync(): void {
     } else {
       actions = [
         ...repairs,
-        ...planSync({ t: todoist.origins, n: primary.origins, m: primary.generated, c: todoist.generated }),
+        ...planSync({
+          t: mirrorExclusion.origins,
+          n: todoistTaskOrigins,
+          m: primary.generated,
+          c: resolved.generated,
+        }),
       ];
     }
 
@@ -112,7 +158,13 @@ export function sync(): void {
     };
     const result = executeActions(actions, calendarIds, logger);
 
-    const observed = [...todoist.observedLinks, ...primary.observedLinks, ...markedLinksFromActions(actions)];
+    const observed = [
+      ...todoist.observedLinks,
+      ...primary.observedLinks,
+      ...resolved.observed,
+      ...keptInactiveLinkObserved,
+      ...markedLinksFromActions(actions),
+    ];
 
     const { entries, changed } = planLinks({ current: links, observed, result, now });
     if (changed) {
@@ -149,6 +201,71 @@ export function setup(): void {
       ScriptApp.newTrigger(TRIGGER_HANDLER).timeBased().everyMinutes(TRIGGER_INTERVAL_MINUTES).create();
     }
   } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * 旧経路（P→T が「Todoist」カレンダーへの C 複製だった頃）の残骸を削除する使い捨て関数。
+ * 通常の `sync` からは呼ばれない。明示的に手動で 1 回実行する（README 参照）。
+ *
+ * 削除するのは、次の条件をすべて満たすイベントだけである。
+ *   - srcUid を持つ（`getSrcUid` が null を返さない）
+ *   - initialMatch を持たない（`isInitialMatched` が false）
+ *   - links に対応する行（calendar: 'todoist', kind: 'generated', iCalUID 一致）がある
+ * これ以外（initialMatch が付いたペア、srcUid を持たない本物の Todoist タスクのイベントなど）は
+ * 絶対に削除しない。削除したイベントに対応する links の行も取り除く。
+ *
+ * 対象は listFutureEvents と同じ「現在時刻以降」の範囲に限る（過去の C は放置してよい。
+ * 既に終わった予定であり busy 判定にも影響しない）。
+ */
+export function cleanupLegacyTodoistCopies(): void {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(LOCK_WAIT_MS)) {
+    throw new Error(
+      'cleanupLegacyTodoistCopies: 同期処理の実行中のためロックを取得できませんでした。しばらくしてから再実行してください。',
+    );
+  }
+
+  const logger = createLogger();
+  try {
+    const settings = readSettings();
+    const links = readLinks();
+    const now = new Date();
+    const events = listFutureEvents(settings.todoistCalendarId, now);
+
+    const generatedICalUIDs = new Set(
+      links.filter((link) => link.calendar === 'todoist' && link.kind === 'generated').map((link) => link.iCalUID),
+    );
+
+    const deletedKeys = new Set<string>();
+    for (const event of events) {
+      const srcUid = getSrcUid(event);
+      if (srcUid === null) {
+        continue; // 本物の Todoist タスクのイベント（srcUid を持たない）は絶対に削除しない
+      }
+      if (isInitialMatched(event)) {
+        continue; // 初回照合ペアは絶対に削除しない
+      }
+      const iCalUID = event.iCalUID;
+      if (typeof iCalUID !== 'string' || iCalUID.length === 0 || !generatedICalUIDs.has(iCalUID)) {
+        continue; // links に対応する generated 行が無いものは安全側で削除しない
+      }
+      const eventId = event.id;
+      if (typeof eventId !== 'string' || eventId.length === 0) {
+        throw new Error(`削除対象の旧経路の複製に id がありません (iCalUID=${iCalUID})。`);
+      }
+      removeEvent(settings.todoistCalendarId, eventId);
+      deletedKeys.add(`todoist:${iCalUID}`);
+      logger.info('P→T', srcUid, `cleanup: deleted legacy todoist copy (iCalUID=${iCalUID})`);
+    }
+
+    if (deletedKeys.size > 0) {
+      const remainingLinks = links.filter((link) => !deletedKeys.has(`${link.calendar}:${link.iCalUID}`));
+      writeLinks(remainingLinks);
+    }
+  } finally {
+    logger.flush();
     lock.releaseLock();
   }
 }

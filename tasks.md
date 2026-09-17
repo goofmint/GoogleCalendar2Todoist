@@ -3,6 +3,27 @@
 対象: `requirements.md` / `design.md`
 作成日: 2026-09-15
 
+## 改訂履歴
+
+- 2026-09-17: P→T（`primary` の会議 → Todoist）が「Todoist」カレンダーへの複製経由では機能しないことが判明（Todoist 公式ヘルプ参照）したため、Todoist API 直接呼び出しに変更した（`requirements.md`/`design.md` の D9〜D12 を参照）。本ページの Phase 1〜4 は最初の実装（T→P 含む全体の土台）の記録として残し、この改訂の実装内容は以下に追記する。
+
+### Phase 5: P→T を Todoist API 直接呼び出しに置換（2026-09-17 改訂分）
+
+- [x] `src/todoistGateway.ts` を新規作成（`listTasks`/`createTask`/`updateTask`/`removeTask`）
+- [x] `src/config.ts` に Todoist API 関連定数を追加（プロジェクト ID 設定は追加しない）
+- [x] `appsscript.json` に `script.external_request` スコープを追加
+- [x] `src/types.ts` を拡張（`TodoistTask`/`GeneratedTodoistTask`、`LinkEntry.todoistTaskId`、`SyncAction` を rule ごとに calendar を固定した discriminated union に変更）
+- [x] `src/eventContent.ts` に `buildTodoistTaskPayload`/`isSameTodoistTaskContent` を追加、`hasNonEmptyRecurrence` を export に変更
+- [x] `src/syncPlanner.ts` に `reconcileTodoistTasks`（P→T 専用。繰り返し N を対象外化）、`resolveTodoistTaskLinks`（D11）、`excludeOwnTaskMirrors`（D10）を追加。`planSync` の `c` を `GeneratedTodoistTask[]` に変更
+- [x] `src/actionExecutor.ts` に `calendar === 'todoist'` の分岐を追加（todoistGateway へ振り分け）
+- [x] `src/linksRepository.ts`/`src/settingsRepository.ts` の `LINKS_HEADER` に `todoistTaskId` 列を追加。旧形式ヘッダーの検出（明確な throw）を追加
+- [x] `src/linksPlanner.ts` の `linkKey` を、todoist の generated 行では `todoist:${todoistTaskId}` を使うよう変更
+- [x] `src/main.ts` を更新（P→T の入力を Todoist タスクに置換、二重ミラー除外の配線、完了済みタスクの再作成防止の配線）。`cleanupLegacyTodoistCopies` を新規追加
+- [x] `esbuild.config.mjs` の footer に `cleanupLegacyTodoistCopies` を追加
+- [x] 全モジュールのテストを更新・追加。`npm test`/`npm run lint`/`npm run typecheck`/`npm run build` が通ることを確認
+- [x] `requirements.md`/`design.md`/`README.md` を本改訂の内容に更新
+- [ ] 本番導入後の確認（V6: `due_datetime` の往復確認、二重ミラーが起きないこと、完了済みタスクが再作成されないこと）は未実施。導入後に確認すること
+
 ## 概要
 
 - 総タスク数: 17

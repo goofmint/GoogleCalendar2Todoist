@@ -1,7 +1,7 @@
 # 詳細設計書 - Todoist ⇄ Google カレンダー 同期（GAS）
 
-対象要件: `requirements.md`（2026-09-15）
-作成日: 2026-09-15
+対象要件: `requirements.md`（2026-09-15、2026-09-17 改訂）
+作成日: 2026-09-15（2026-09-17 改訂: D9〜D11、P→T を Todoist API 直接呼び出しに変更）
 
 ---
 
@@ -72,7 +72,7 @@ M には `reminders: { useDefault: false, overrides: [] }` を設定します。
 
 影響が残るのは、次の 2 つだけです。
 
-- 会議が終わる前にタスクを完了した場合（その会議の C は作り直される）
+- 会議が終わる前にタスクを完了した場合（その会議の C は作り直される。※本改訂により C 自体が廃止されたため、この項目は D9 以降に読み替える）
 - 繰り返し系列。系列の最後の回が未来にある限り、系列全体が範囲内に残る（D8 適用後も、未来回が残っている系列はこれまでどおり範囲内）
 
 ### D8. 全回終了済みの繰り返し系列を起点分類から除外する【確定】
@@ -86,6 +86,50 @@ M には `reminders: { useDefault: false, overrides: [] }` を設定します。
 - 除外するのは起点候補（ルール8）だけで、生成物（ルール4・5、M/C）には適用しない。除外した起点の生成物は `origins` から欠落するため、`reconcile()` の S3/S6 の孤児削除により次回同期で自動的に消える。既存の「終了系列の複製」もこれで解消する
 - 繰り返しを持つ起点候補ごとに `Events.instances` の呼び出しが 1 回増える（API 呼び出しの追加コスト）
 
+### D9. P→T を「Todoist」カレンダーへの複製（C）から Todoist API 直接呼び出しに変更する【確定・本改訂の中心】
+
+**問題**: Todoist のヘルプによれば、公式の Google カレンダー連携は「Todoist」カレンダーに直接追加されたイベントからタスクを新規作成しない（既にタスクに紐づいたイベントの変更を反映するだけ）。そのため、当初の設計（N を「Todoist」カレンダーに複製すれば公式連携がタスク化する）は、一度もタスクを生成していなかった。
+
+**対策**: P→T は GAS から Todoist API v1（`https://api.todoist.com/api/v1`）を `UrlFetchApp` で直接呼び出す方式に変更する。T→P（公式連携が作る「Todoist」カレンダーのイベントを primary にミラーする方向）は、公式連携の障害・仕様に依存しないため、そのまま維持する。
+
+- ベース URL: `https://api.todoist.com/api/v1`。認証は `Authorization: Bearer <token>`（トークンはスクリプトプロパティ `TODOIST_API_TOKEN` から読む。未設定・空文字なら明確に throw する）
+- `GET /tasks` はカーソルベースのページング（レスポンスの `results` / `next_cursor`）。`next_cursor` が `null` になるまで `cursor` クエリパラメータを渡して繰り返す。1 ページの上限は 200 件
+- 作成: `POST /tasks`（`content` 必須、`due_date` または `due_datetime` のどちらか）。更新: `POST /tasks/{id}`（同じボディ）。削除: `DELETE /tasks/{id}`
+- プロジェクトは指定しない（Inbox に作られる）。プロジェクト ID の設定項目は設けない（要件どおり）
+- `due_datetime` は UTC（`Z` 付き、秒精度）に変換して送る。タスクの `due.date` は、終日なら `'YYYY-MM-DD'`、時刻ありなら `'YYYY-MM-DDTHH:MM:SSZ'`（自分たちが作ったタスクは常にこの形式で返る前提。本番導入直後に確認すること。V6 参照）
+- 対応付けは `links` シートの `srcUid ↔ todoistTaskId` だけで行う。タスク本体（`content`/`description`）には何も書き込まない（Design Choice 2）
+- 繰り返し（`recurrence` を持つ）N は、当面 P→T タスク化の対象外とする（RRULE → `due_string` の無損失変換が困難なため。Design Choice 4）
+
+### D10. S1 の二重ミラー除外（自作タスクの echo 対策）【確定】
+
+**問題**: 日時付きのタスクは、Todoist 公式連携が「Todoist」カレンダーにイベント（echo）を作る。このイベントは GAS が付けた `srcUid` を持たないため、`classify()` によって無条件に T（起点）と判定され、S1 で primary に不要なミラーが作られてしまう（同じ会議が primary に二重に見える）。
+
+**対策**: `main.ts` で、有効な生成タスクを持つ N（`resolveTodoistTaskLinks` の `generated` に含まれる N）の集合を作り、`excludeOwnTaskMirrors()`（`syncPlanner.ts`）でコンテンツキー（`start + '|' + summary`。初回照合と同じ関数 `contentKeyForInitialMatch` を再利用する）が一致する T 候補を、`planSync` に渡す前に除外する。
+
+- 曖昧一致（同じキーの T 候補、または同じキーの N-with-task が複数）は安全側に倒し、除外せず `WARN` を記録する（無関係な自然発生の同名タスクを誤って隠さないため）
+- `classify()` 自体は変更しない（`eventClassifier.ts` は calendar イベントの分類だけを純粋に担当する既存の責務を保つ）。除外は `main.ts` の orchestration 層で行う
+
+### D11. Todoist タスクの完了・削除を尊重する（再作成しない）【確定】
+
+**問題**: N に対応する Todoist タスクをユーザーが完了・削除した場合、次回の同期で S4（作成）が再び走ると、ユーザーの操作を無視してタスクを作り直してしまう。
+
+**対策**: `resolveTodoistTaskLinks()`（`syncPlanner.ts`）が `links` の `todoist`/`generated` 行を現在のアクティブなタスク一覧（`GET /tasks`。完了済みタスクは含まれない）と突き合わせる。
+
+| 状態 | 扱い |
+|---|---|
+| タスクがアクティブ、対応する N もある | 通常どおり `generated` に含める（S5/S6 の対象） |
+| タスクがアクティブ、対応する N が無い（会議が削除された） | `generated` に含める。`reconcileTodoistTasks` の孤児削除ロジックにより S6 で削除される |
+| タスクが非アクティブ（完了・削除済み）、対応する N がまだある | `generated`/`origins` のどちらにも含めない（S4 を再発生させない）。`links` の行は残す（再発生防止の記録として） |
+| タスクが非アクティブ、対応する N も無い | `links` の行を取り除く（掃除。タスクは既に無いので削除アクションは出さない） |
+
+判定に必要な「対応する N があるか」は `main.ts` が `primary.origins` の `iCalUID` 集合と突き合わせて決める（`resolveTodoistTaskLinks()` 自体は `links` と `activeTasks` しか見ない純粋関数のため）。
+
+### D12. 事前検証（本改訂分。V6）
+
+| # | 確認内容 | 崩れた場合の影響 |
+|---|---|---|
+| V6 | `due_datetime` に UTC（`Z` 付き）で送った場合、`GET /tasks` のレスポンスの `due.date` が同じ `Z` 付き UTC 文字列で返るか（別のタイムゾーンの壁時計表記に変換されて返らないか） | 変換されて返る場合、`isSameTodoistTaskContent` の文字列比較が常に不一致となり、5 分ごとに S5 update が空振りし続ける。本番導入直後に `log` シートで S5 の頻度を確認すること |
+
 ---
 
 ## 1. アーキテクチャ概要
@@ -93,24 +137,25 @@ M には `reminders: { useDefault: false, overrides: [] }` を設定します。
 ### 1.1 システム構成図
 
 ```
-┌──────────┐  公式連携  ┌──────────────────────┐
-│ Todoist  │ ⇄───────⇄ │ 「Todoist」カレンダー │
-└──────────┘            │   T（起点）/ C（複製）│
-                        └──────────┬───────────┘
-                                   │ Calendar API v3（Advanced Service）
-                    ┌──────────────┴──────────────┐
-                    │ GAS（時間トリガー 5 分）     │
-                    │  sync()                     │
-                    │   ├ LockService             │
-                    │   ├ 取得 → 分類 → 計画 → 実行│
-                    │   └ log / links シート       │
-                    └──────────────┬──────────────┘
-                                   │
-                        ┌──────────┴───────────┐
-                        │ primary カレンダー    │ ⇄ 同僚
-                        │   N（起点）/ M（ミラー）│
-                        └──────────────────────┘
-          Spreadsheet: settings / log / links
+┌──────────┐  公式連携（T→P のみ）  ┌──────────────────────┐
+│ Todoist  │ ⇄──────────────────⇄ │ 「Todoist」カレンダー │
+└────┬─────┘                       │   T（起点）           │
+     │ ▲                          └──────────┬───────────┘
+     │ │ Todoist API v1                      │ Calendar API v3（Advanced Service）
+     │ │ （P→T。UrlFetchApp 直接呼び出し）     │
+     │ │                       ┌──────────────┴──────────────┐
+     │ └───────────────────────┤ GAS（時間トリガー 5 分）     │
+     └─────────────────────────┤  sync()                     │
+                                │   ├ LockService             │
+                                │   ├ 取得 → 分類 → 計画 → 実行│
+                                │   └ log / links シート       │
+                                └──────────────┬──────────────┘
+                                               │
+                                    ┌──────────┴───────────┐
+                                    │ primary カレンダー    │ ⇄ 同僚
+                                    │   N（起点）/ M（ミラー）│
+                                    └──────────────────────┘
+                      Spreadsheet: settings / log / links
 ```
 
 ### 1.2 技術スタック
@@ -119,6 +164,7 @@ M には `reminders: { useDefault: false, overrides: [] }` を設定します。
 |---|---|---|
 | 実行環境 | Google Apps Script（V8）、スプレッドシートにコンテナバインド | 要件 |
 | カレンダーアクセス | Advanced Calendar Service（Calendar API v3） | `CalendarApp` では `extendedProperties`、`iCalUID`、`recurrence` を扱えない |
+| Todoist アクセス | Todoist API v1（`UrlFetchApp` による直接呼び出し） | 公式カレンダー連携は「Todoist」カレンダーへの直接追加からタスクを新規作成しないため（D9） |
 | 言語 | TypeScript（`any`/`unknown`/`class` は使わない） | 型で分類ミスを防ぐ |
 | 型定義 | `@types/google-apps-script` | `GoogleAppsScript.Calendar.Schema.Event` などを使う |
 | バンドル | esbuild（1 ファイルにまとめ、トップレベル関数を footer で公開） | clasp 3 系は TypeScript を変換しないため |
@@ -134,19 +180,20 @@ M には `reminders: { useDefault: false, overrides: [] }` を設定します。
 
 | ファイル | 責務 | 依存 | 副作用 |
 |---|---|---|---|
-| `src/main.ts` | 公開関数（`sync` / `setup`）。ロック取得と全体の流れ | 全モジュール | あり |
+| `src/main.ts` | 公開関数（`sync` / `setup` / `cleanupLegacyTodoistCopies`）。ロック取得と全体の流れ | 全モジュール | あり |
 | `src/config.ts` | 定数 | なし | なし |
 | `src/types.ts` | 型定義 | なし | なし |
 | `src/settingsRepository.ts` | `settings` シートの読み書き、シートの初期化 | config | あり |
 | `src/linksRepository.ts` | `links` シートの読み込みと全件の書き換え | config, types | あり |
 | `src/logger.ts` | ログをメモリに溜め、`log` シートへ一括で追記 | config | あり |
-| `src/calendarGateway.ts` | Calendar API の呼び出し（list/insert/patch/remove） | config | あり |
-| `src/eventClassifier.ts` | T/N/M/C/ペア/対象外への分類と、srcUid を失った予定の検出 | config, types | なし |
-| `src/eventContent.ts` | 内容の正規化・比較、書き込み用リソースの生成 | config, types | なし |
-| `src/initialMatcher.ts` | 初回照合の計画 | eventContent, types | なし |
-| `src/syncPlanner.ts` | S1〜S6 の計画 | eventContent, types | なし |
+| `src/calendarGateway.ts` | Calendar API の呼び出し（list/insert/patch/remove/instances） | config | あり |
+| `src/todoistGateway.ts` | Todoist API v1 の呼び出し（listTasks/createTask/updateTask/removeTask） | config | あり |
+| `src/eventClassifier.ts` | T/N/M/ペア/対象外への分類と、srcUid を失った予定の検出（calendar イベントのみ。P→T のタスク側は扱わない） | config, types | なし |
+| `src/eventContent.ts` | 内容の正規化・比較、書き込み用リソース／Todoist タスクペイロードの生成 | config, types, todoistGateway（型のみ） | なし |
+| `src/initialMatcher.ts` | 初回照合の計画（T↔N のペアリング。本改訂による変更なし） | eventContent, types | なし |
+| `src/syncPlanner.ts` | S1〜S6 の計画、P→T 用の links/アクティブタスク突き合わせ（`resolveTodoistTaskLinks`）、S1 二重ミラー除外（`excludeOwnTaskMirrors`） | eventContent, types | なし |
 | `src/linksPlanner.ts` | 実行結果から、新しい `links` を組み立てる | types | なし |
-| `src/actionExecutor.ts` | 計画した処理を API で実行し、ログに記録して結果を返す | calendarGateway, eventContent, logger | あり |
+| `src/actionExecutor.ts` | 計画した処理を API で実行し、ログに記録して結果を返す（`calendar: 'todoist'` の create/update/delete は todoistGateway へ振り分ける） | calendarGateway, todoistGateway, eventContent, logger | あり |
 
 ### 2.2 各コンポーネントの詳細
 
@@ -168,6 +215,11 @@ export const SETTING_KEY_TODOIST_CALENDAR_ID = 'todoistCalendarId';
 export const SETTING_KEY_INITIAL_MATCH_DONE_AT = 'initialMatchDoneAt';
 export const ORIGIN_EVENT_TYPES: ReadonlyArray<string> = ['default', 'fromGmail'];
 export const TRIGGER_HANDLER = 'sync';
+
+// Todoist API v1 関連（本改訂で追加）
+export const TODOIST_API_BASE_URL = 'https://api.todoist.com/api/v1';
+export const TODOIST_API_TOKEN_PROPERTY_KEY = 'TODOIST_API_TOKEN';
+export const TODOIST_TASKS_LIST_LIMIT = 200;
 ```
 
 #### types.ts
@@ -180,31 +232,45 @@ export type Direction = 'T→P' | 'P→T' | 'INIT' | 'REPAIR';
 export type LinkKind = 'generated' | 'paired';
 export type LinkEntry = {
   calendar: CalendarRole;
-  iCalUID: string;
+  iCalUID: string;           // todoist の generated 行（Todoist タスク由来）では空文字を許容する
   srcUid: string;
   kind: LinkKind;
   recordedAt: Date;
+  todoistTaskId?: string;    // todoist の generated 行でのみ設定する（本改訂で追加）
 };
 
 export type GeneratedEvent = { event: CalendarEvent; srcUid: string };
 
+// Todoist タスクの最小表現（本改訂で追加）
+export type TodoistTaskDue = {
+  date: string;              // 'YYYY-MM-DD' | 'YYYY-MM-DDTHH:MM:SS' | 'YYYY-MM-DDTHH:MM:SSZ'
+  timezone: string | null;
+};
+export type TodoistTask = { id: string; content: string; due: TodoistTaskDue | null };
+export type GeneratedTodoistTask = { task: TodoistTask; srcUid: string };
+
 export type ClassifiedEvents = {
   origins: ReadonlyArray<CalendarEvent>;        // T または N
-  generated: ReadonlyArray<GeneratedEvent>;     // M または C（srcUid を失い、links から復元したものも含む）
+  generated: ReadonlyArray<GeneratedEvent>;     // M（primary）または、T→P 側の旧 C の残骸（todoist。本改訂後は新規に増えない）
   observedLinks: ReadonlyArray<Omit<LinkEntry, 'recordedAt'>>;  // 取得範囲内で確認できた生成物・ペア
   repairs: ReadonlyArray<SyncAction>;           // kind: 'repair'
 };
 
+// S1〜S3/S3D は primary（calendar イベント）、S4〜S6/S6D は todoist（Todoist タスク）に
+// 固定されるため、rule と calendar の対応が 1:1 になるよう union を分けた（本改訂で変更）。
 export type SyncAction =
-  | { kind: 'create'; rule: 'S1' | 'S4'; direction: Direction; calendar: CalendarRole; source: CalendarEvent }
-  | { kind: 'update'; rule: 'S2' | 'S5'; direction: Direction; calendar: CalendarRole; source: CalendarEvent; target: CalendarEvent }
-  | { kind: 'delete'; rule: 'S3' | 'S6' | 'S3D' | 'S6D'; direction: Direction; calendar: CalendarRole; target: CalendarEvent; srcUid: string }
+  | { kind: 'create'; rule: 'S1'; direction: Direction; calendar: 'primary'; source: CalendarEvent }
+  | { kind: 'create'; rule: 'S4'; direction: Direction; calendar: 'todoist'; source: CalendarEvent }
+  | { kind: 'update'; rule: 'S2'; direction: Direction; calendar: 'primary'; source: CalendarEvent; target: CalendarEvent }
+  | { kind: 'update'; rule: 'S5'; direction: Direction; calendar: 'todoist'; source: CalendarEvent; todoistTaskId: string }
+  | { kind: 'delete'; rule: 'S3' | 'S3D'; direction: Direction; calendar: 'primary'; target: CalendarEvent; srcUid: string }
+  | { kind: 'delete'; rule: 'S6' | 'S6D'; direction: Direction; calendar: 'todoist'; todoistTaskId: string; srcUid: string }
   | { kind: 'mark'; rule: 'INIT'; direction: 'INIT'; calendar: CalendarRole; target: CalendarEvent; srcUid: string }
   | { kind: 'repair'; rule: 'REPAIR'; direction: 'REPAIR'; calendar: CalendarRole; target: CalendarEvent; srcUid: string; linkKind: LinkKind };
 
 export type ExecutionResult = {
   createdLinks: ReadonlyArray<Omit<LinkEntry, 'recordedAt'>>;
-  deletedKeys: ReadonlyArray<string>;  // `${calendar}:${iCalUID}`
+  deletedKeys: ReadonlyArray<string>;  // primary/paired 系は `${calendar}:${iCalUID}`、todoist の generated 系は `todoist:${todoistTaskId}`
 };
 
 export type Settings = {
@@ -229,9 +295,13 @@ export function ensureSheets(): void;  // setup 用。settings/log/links シー�
 #### linksRepository.ts
 
 ```typescript
+export const LINKS_HEADER: ReadonlyArray<string>;  // ['calendar','iCalUID','srcUid','kind','recordedAt','todoistTaskId']（本改訂で列追加）
 export function readLinks(): LinkEntry[];
 export function writeLinks(entries: ReadonlyArray<LinkEntry>): void;  // ヘッダ以外を全件書き換える
 ```
+
+- ヘッダー行を `LINKS_HEADER` と厳密照合する（`validateHeaderOrThrow`）。旧形式（`todoistTaskId` 列が無い 5 列）のシートは、ヘッダー不一致として明確なメッセージで throw する（黙って読み替えない。README に移行手順を記載）
+- 行検証: `calendar === 'todoist' && kind === 'generated'` の行は、`iCalUID`（移行前から残る旧経路の C 複製の行。`cleanupLegacyTodoistCopies` が削除する）と `todoistTaskId`（タスク由来の行）のどちらか一方だけを持つことを必須にする。両方空・両方ありは throw する。それ以外は従来どおり `iCalUID` を必須にし、`todoistTaskId` は必須にしない（空でもよい）
 
 #### logger.ts
 
@@ -256,6 +326,24 @@ export function hasFutureInstance(calendarId: string, eventId: string, now: Date
 - `listFutureEvents` は `Calendar.Events.list(calendarId, { timeMin: now.toISOString(), singleEvents: false, showDeleted: false, maxResults: LIST_PAGE_SIZE, pageToken })` を `nextPageToken` がなくなるまで繰り返す
 - 書き込みにはすべて `{ sendUpdates: SEND_UPDATES }` を付ける。例外は捕捉しない
 - `hasFutureInstance`（D8）は `Calendar.Events.instances(calendarId, eventId, { timeMin: now.toISOString(), maxResults: INSTANCE_LOOKUP_MAX_RESULTS, showDeleted: false })` を呼び、`response.items` が 1 件以上あれば `true` を返す
+- 本改訂による変更なし（T→P はこれまでどおり Calendar API のみで完結する）
+
+#### todoistGateway.ts（本改訂で新規追加）
+
+```typescript
+export type TodoistTaskPayload = { content: string; due_date?: string; due_datetime?: string };
+
+export function listTasks(): TodoistTask[];
+export function createTask(payload: TodoistTaskPayload): TodoistTask;
+export function updateTask(taskId: string, payload: TodoistTaskPayload): TodoistTask;
+export function removeTask(taskId: string): void;
+```
+
+- `calendarGateway.ts` と同じパターン（サービス取得関数＋1 関数 1 API 呼び出し＋try/catch なし）を踏襲する
+- トークンはスクリプトプロパティ `TODOIST_API_TOKEN_PROPERTY_KEY` から読む。未設定・空文字なら明確に throw する
+- 共通ヘルパー（`fetchTodoist`）で `Authorization: Bearer <token>` を付け、`muteHttpExceptions: true` を使う。`getResponseCode()` が 2xx 以外なら本文を含む `Error` を throw する
+- `listTasks` は `GET /tasks?limit=200[&cursor=...]` をレスポンスの `next_cursor` が `null` になるまで繰り返す
+- タスク完了ではなく削除（`DELETE /tasks/{id}`）を基本とする（S6/S6D）
 
 #### eventClassifier.ts
 
@@ -290,6 +378,8 @@ export function classify(
 
 - 起点の中で `iCalUID` が重複していたら `Error` を throw する（D2 の除外をした後に重複が残るのは、異常なデータ）
 
+**本改訂による `classify()` への影響: なし。** `classify('todoist', ...)` の「C（`kind: 'generated'` の todoist イベント）」は、旧経路（本改訂前に作られた「Todoist」カレンダーへの複製）の残骸を指す。本改訂後は新たに作られないため、`main.ts` はこの `generated` バケットを P→T の `planSync` 入力に使わない（`resolveTodoistTaskLinks` が返す Todoist タスクの `generated` を使う）。残骸の掃除は Phase 4 の `cleanupLegacyTodoistCopies`（`main.ts`）を参照。
+
 #### eventContent.ts
 
 ```typescript
@@ -307,17 +397,27 @@ export function buildInsertResource(calendar: CalendarRole, source: CalendarEven
 export function buildUpdateResource(calendar: CalendarRole, source: CalendarEvent): CalendarEvent;  // extendedProperties を含めない
 export function buildMarkResource(srcUid: string): CalendarEvent;                                  // srcUid + initialMatch
 export function buildRepairResource(srcUid: string, linkKind: LinkKind): CalendarEvent;
+
+// 本改訂で追加。P→T（Todoist タスク）用。
+export type TodoistTaskPayload = { content: string; due_date?: string; due_datetime?: string };
+export function hasNonEmptyRecurrence(event: CalendarEvent): boolean;  // 既存の private 関数を export に変更しただけ
+export function buildTodoistTaskPayload(source: CalendarEvent): TodoistTaskPayload;
+export function isSameTodoistTaskContent(source: CalendarEvent, task: TodoistTask): boolean;
 ```
 
-| フィールド | primary に書く（M） | todoist に書く（C） |
+| フィールド | primary に書く（M） | todoist に書く（C。旧経路） |
 |---|---|---|
 | `summary` / `start` / `end` / `recurrence` | コピー元の値をそのまま使う | コピー元の値をそのまま使う |
 | `extendedProperties.private.srcUid` | コピー元の `iCalUID`（insert のときだけ送る） | 同左 |
 | `visibility` | `'private'` | 設定しない |
 | `reminders` | `{ useDefault: false, overrides: [] }` | 設定しない |
 
-- コピー元に `recurrence` がないときは `recurrence: []` を明示する（V4 の結果によって見直す）
+- コピー元に `recurrence` がないときは `recurrence: []` を明示する
 - `summary` がない場合に `''` とするのは、比較のための正規化だけ。書き込む値を補うものではない
+
+**`buildTodoistTaskPayload`（本改訂で追加）**: N の `summary → content`、`start`（終日）→ `due_date`（そのまま）、`start`（時刻あり）→ `due_datetime`（UTC・秒精度・`Z` 付きに変換）。`content` が空になる場合（`summary` が無い）は Todoist API が拒否するため、この関数が明確に throw する（フォールバックしない）。`end` は使わない（Todoist にその概念が無い）。
+
+**`isSameTodoistTaskContent`（本改訂で追加）**: `buildTodoistTaskPayload(source)` で期待値を作り、`task.content` と `task.due.date` を文字列比較する。`task.due` が `null`、または期待した形式（`due_date`/`due_datetime` のどちらを送ったか）と一致しなければ「異なる」とみなし S5 update を出す（不確実な場合は更新側に倒す。V6 で本番動作を確認すること）。
 
 #### initialMatcher.ts
 
@@ -334,6 +434,8 @@ export function planInitialMatch(
    - A（todoist）には `srcUid = uid(B)` と `initialMatch`
    - B（primary）には `srcUid = uid(A)` と `initialMatch`
 
+**本改訂による変更: なし。** T↔N のペアリングは calendar イベントだけで完結し、Todoist タスク API とは無関係のため、意味・実装ともに変更していない。
+
 #### syncPlanner.ts
 
 ```typescript
@@ -341,35 +443,64 @@ export function planSync(input: {
   t: ReadonlyArray<CalendarEvent>;
   n: ReadonlyArray<CalendarEvent>;
   m: ReadonlyArray<GeneratedEvent>;
-  c: ReadonlyArray<GeneratedEvent>;
+  c: ReadonlyArray<GeneratedTodoistTask>;  // 本改訂で変更: 旧「Todoist」カレンダーの C ではなく Todoist タスク
 }): SyncAction[];
+
+// 本改訂で追加
+export function resolveTodoistTaskLinks(input: {
+  links: ReadonlyArray<LinkEntry>;
+  activeTasks: ReadonlyArray<TodoistTask>;
+}): {
+  generated: GeneratedTodoistTask[];
+  observed: Array<Omit<LinkEntry, 'recordedAt'>>;
+  inactiveLinks: Array<{ srcUid: string; observedRow: Omit<LinkEntry, 'recordedAt'> }>;
+};
+
+export function excludeOwnTaskMirrors(
+  todoistOrigins: ReadonlyArray<CalendarEvent>,
+  nEventsWithGeneratedTask: ReadonlyArray<CalendarEvent>,
+): { origins: CalendarEvent[]; ambiguousKeys: string[] };
 ```
 
 ```
-reconcile(origins, generated, targetCalendar, rules):
+reconcile(origins, generated):                    # T→P（primary 固定。旧: targetCalendar/rules 引数を撤去）
   originByUid    = Map(iCalUID → origin)
   generatedByUid = srcUid ごとにグループ化
   for origin in origins:
     group = generatedByUid[origin.iCalUID]
-    if group なし                    → create
+    if group なし                    → create（S1）
     else:
       keep = group[0]（id の昇順で先頭）
-      if !isSameContent(origin, keep) → update
-      group[1..]                     → delete（S3D/S6D: 重複した生成物）
+      if !isSameContent(origin, keep) → update（S2）
+      group[1..]                     → delete（S3D: 重複した生成物）
   for (srcUid, group) in generatedByUid:
-    if !originByUid.has(srcUid)      → group をすべて delete
+    if !originByUid.has(srcUid)      → group をすべて delete（S3）
+
+reconcileTodoistTasks(n, generated):               # P→T（todoist 固定。本改訂で新規追加）
+  n から recurrence を持つものを除外する（要件の制約）
+  以降は reconcile と同じロジック（create=S4, update=S5, delete=S6, duplicateDelete=S6D）
+  ただし generated は GeneratedTodoistTask（task.id で識別）、
+  update/delete アクションは target ではなく todoistTaskId を持つ
 ```
 
-- T→P: `reconcile(t, m, 'primary', S1/S2/S3)`
-- P→T: `reconcile(n, c, 'todoist', S4/S5/S6)`
-- ペアは T/N/M/C のどれにも入らないので、ここで削除されることはない（D1）
+- T→P: `reconcile(t, m)`
+- P→T: `reconcileTodoistTasks(n, c)`（`planSync` 内部で呼ぶ。公開 API ではない）
+- ペアは T/N/M のどれにも入らないので、ここで削除されることはない（D1）
+
+**`resolveTodoistTaskLinks`（D11）**: `links` の `todoist`/`generated` 行を `activeTasks`（`GET /tasks` の結果）と突き合わせる。アクティブなタスクは `generated`/`observed` に入れる（N の有無に関わらず。N が無ければ `reconcileTodoistTasks` の孤児削除が S6 を出す）。非アクティブ（ユーザーが完了・削除した）なら `inactiveLinks` として返すだけにとどめる。実際に links 行を残すか消すかは、対応する N がまだ `primary.origins` にあるかどうかで `main.ts` が決める（この関数自体は N の集合を知らない）。
+
+**`excludeOwnTaskMirrors`（D10）**: 有効な生成タスクを持つ N と同じコンテンツキー（`contentKeyForInitialMatch` を再利用）を持つ T 候補を、自作タスクの echo とみなして除外する。曖昧一致は安全側（除外しない）にし、`ambiguousKeys` で呼び出し元に知らせる。
 
 #### linksPlanner.ts
 
 ```typescript
+export function linkKey(entry: { calendar: CalendarRole; iCalUID: string; todoistTaskId?: string }): string;
+// todoist の generated 行（todoistTaskId を持つ）は `todoist:${todoistTaskId}`、
+// それ以外は従来どおり `${calendar}:${iCalUID}`（本改訂で変更）
+
 export function planLinks(input: {
   current: ReadonlyArray<LinkEntry>;
-  observed: ReadonlyArray<Omit<LinkEntry, 'recordedAt'>>;  // 両カレンダーの observedLinks
+  observed: ReadonlyArray<Omit<LinkEntry, 'recordedAt'>>;  // 両カレンダーの observedLinks + resolveTodoistTaskLinks の結果
   result: ExecutionResult;
   now: Date;
 }): { entries: LinkEntry[]; changed: boolean };
@@ -377,7 +508,7 @@ export function planLinks(input: {
 
 1. `observed ∪ result.createdLinks` から `result.deletedKeys` を除く
 2. 同じキーの行が `current` にあれば、その `recordedAt` を引き継ぐ。なければ `now` を入れる
-3. `current` にあって上の結果にないキー（過去になった予定、手動で削除された予定）は除く
+3. `current` にあって上の結果にないキー（過去になった予定、手動で削除された予定、掃除された旧タスクの links 行）は除く
 4. 並び順をキー順に揃え、`current` と比べて `changed` を決める
 
 #### actionExecutor.ts
@@ -390,19 +521,25 @@ export function executeActions(
 ): ExecutionResult;
 ```
 
-| kind | API | ログ |
-|---|---|---|
-| create | `insertEvent`。レスポンスの `iCalUID` を createdLinks に入れる | INFO |
-| update | `patchEvent(buildUpdateResource)` | INFO |
-| delete | `removeEvent`。キーを deletedKeys に入れる | INFO |
-| mark | `patchEvent(buildMarkResource)` | INFO / INIT |
-| repair | `patchEvent(buildRepairResource)` | **WARN** / REPAIR |
+| kind | calendar | API | ログ |
+|---|---|---|---|
+| create | primary（S1） | `insertEvent`。レスポンスの `iCalUID` を createdLinks に入れる | INFO |
+| create | todoist（S4） | `todoistGateway.createTask(buildTodoistTaskPayload)`。レスポンスの `id` を `todoistTaskId` として createdLinks に入れる（`iCalUID: ''`） | INFO |
+| update | primary（S2） | `patchEvent(buildUpdateResource)` | INFO |
+| update | todoist（S5） | `todoistGateway.updateTask(action.todoistTaskId, buildTodoistTaskPayload)` | INFO |
+| delete | primary（S3/S3D） | `removeEvent`。キー `${calendar}:${iCalUID}` を deletedKeys に入れる | INFO |
+| delete | todoist（S6/S6D） | `todoistGateway.removeTask(action.todoistTaskId)`。キー `todoist:${todoistTaskId}` を deletedKeys に入れる | INFO |
+| mark | primary/todoist | `patchEvent(buildMarkResource)` | INFO / INIT |
+| repair | primary/todoist | `patchEvent(buildRepairResource)` | **WARN** / REPAIR |
+
+`action.kind` と `action.calendar` の分岐で `todoistGateway` へ振り分ける（本改訂で追加）。`primary` の場合は従来どおり `calendarGateway` を呼ぶ。Calendar 前提の `requireId`/`requireICalUID` は `todoist` の update/delete には適用しない（`CalendarEvent` を持たないため）。
 
 #### main.ts（公開関数）
 
 ```typescript
-function sync(): void;   // 時間トリガーから呼ばれる
-function setup(): void;  // 手動で 1 回実行。シートの作成と、トリガーの重複しない登録
+function sync(): void;                        // 時間トリガーから呼ばれる
+function setup(): void;                       // 手動で 1 回実行。シートの作成と、トリガーの重複しない登録
+function cleanupLegacyTodoistCopies(): void;  // 手動で 1 回実行。旧経路の C の残骸を削除する（本改訂で追加）
 ```
 
 ```
@@ -419,13 +556,37 @@ try:
                       (event) => hasFutureInstance(PRIMARY_CALENDAR_ID, requireEventId(event), now))
   repairs = [...todoist.repairs, ...primary.repairs]
 
+  # ここから P→T 用の準備（本改訂で追加）
+  activeTasks = listTasks()
+  resolved = resolveTodoistTaskLinks({ links, activeTasks })
+
+  nOriginICalUIDs = primary.origins の iCalUID 集合
+  completedTaskSrcUidsWithExistingN = {}
+  keptInactiveObserved = []
+  for inactive in resolved.inactiveLinks:
+    if nOriginICalUIDs.has(inactive.srcUid):
+      completedTaskSrcUidsWithExistingN.add(inactive.srcUid)   # N はまだある → S4 を再発生させない
+      keptInactiveObserved.push(inactive.observedRow)          # links 行を残す
+    # else: N も無い → 何もしない（links 行を捨てる。掃除）
+
+  todoistTaskOrigins = primary.origins.filter(e => !completedTaskSrcUidsWithExistingN.has(e.iCalUID))
+
+  activeGeneratedSrcUids = Set(resolved.generated.map(g => g.srcUid))
+  nEventsWithGeneratedTask = todoistTaskOrigins.filter(e => activeGeneratedSrcUids.has(e.iCalUID))
+  mirrorExclusion = excludeOwnTaskMirrors(todoist.origins, nEventsWithGeneratedTask)
+  for key in mirrorExclusion.ambiguousKeys: logger.warn('P→T', key, '...')
+  # ここまで P→T 用の準備
+
   if settings.initialMatchDoneAt が空:
     actions = [...repairs, ...planInitialMatch(todoist.origins, primary.origins)]
   else:
-    actions = [...repairs, ...planSync({t: todoist.origins, n: primary.origins, m: primary.generated, c: todoist.generated})]
+    actions = [...repairs, ...planSync({
+      t: mirrorExclusion.origins, n: todoistTaskOrigins, m: primary.generated, c: resolved.generated,
+    })]
 
   result = executeActions(actions, ids, logger)
-  // mark したペアは observed に含まれていないので、actions から paired の行を足してから planLinks に渡す
+  observed = [...todoist.observedLinks, ...primary.observedLinks, ...resolved.observed,
+              ...keptInactiveObserved, ...markedLinksFromActions(actions)]
   {entries, changed} = planLinks({current: links, observed, result, now})
   if changed: writeLinks(entries)
   if 初回: markInitialMatchDone(now)   // 通常同期は次回から行う
@@ -436,7 +597,9 @@ finally:
 
 - `catch` は書かない。例外は `finally` を通ってそのまま外に出る
 - 差分がなければ actions が空、links も変わらず、ログも 0 件になり、書き込みは発生しない
-- 途中で throw されたり時間切れになったりして `links` の更新が漏れても、次回の実行で `srcUid` を持つイベントから復元される（`observedLinks`）
+- 途中で throw されたり時間切れになったりして `links` の更新が漏れても、次回の実行で `srcUid` を持つイベントから復元される（`observedLinks`）。P→T 側の対応は `links` の `todoistTaskId` 行が唯一の記録であるため、この行が失われると復元できない（R9。calendar イベントの `extendedProperties` のような自己修復手段が無い）
+
+**`cleanupLegacyTodoistCopies`（本改訂で追加。手動実行専用）**: `listFutureEvents(todoistCalendarId, now)` の中から、`getSrcUid(event) !== null && !isInitialMatched(event)` かつ `links` に `(calendar: 'todoist', iCalUID, kind: 'generated')` の対応行があるイベントだけを `removeEvent` で削除し、対応する links 行を取り除く。`srcUid` を持たない（本物の Todoist タスクのイベント）、または `initialMatch` を持つ（ペア）イベントは、条件に合致しても絶対に削除しない。通常の `sync` からは呼ばれない。
 
 ---
 
@@ -445,14 +608,15 @@ finally:
 ```
 settings / links シート
         │
-Calendar.Events.list ×2（全ページ）
+Calendar.Events.list ×2（全ページ）/ Todoist API GET /tasks
         ▼
-eventClassifier ──► T,C / N,M / ペア・対象外 / repair
-        │
+eventClassifier（calendar イベントのみ） ──► T / N,M / ペア・対象外 / repair
+        │                    resolveTodoistTaskLinks（Todoist タスク）──► P→T の generated
         ├─ 初回 ──► initialMatcher ──► mark[]
-        └─ 通常 ──► syncPlanner   ──► create/update/delete[]
+        └─ 通常 ──► excludeOwnTaskMirrors（T の二重ミラー除外）
+                     └─► syncPlanner ──► create/update/delete[]
                                        ▼
-                               actionExecutor ──► Calendar API
+                               actionExecutor ──► Calendar API（primary）/ Todoist API（todoist）
                                   │        │
                                   ▼        ▼
                            log シート   linksPlanner ──► links シート（変わったときだけ）
@@ -470,10 +634,14 @@ eventClassifier ──► T,C / N,M / ペア・対象外 / repair
 
 | API | 用途 | 主なパラメータ |
 |---|---|---|
-| `Calendar.Events.list` | 全件取得 | `timeMin`, `singleEvents:false`, `showDeleted:false`, `maxResults`, `pageToken` |
-| `Calendar.Events.insert` | S1/S4 | `sendUpdates:'none'` |
-| `Calendar.Events.patch` | S2/S5/INIT/REPAIR | `sendUpdates:'none'` |
-| `Calendar.Events.remove` | S3/S6/S3D/S6D | `sendUpdates:'none'` |
+| `Calendar.Events.list` | 全件取得（T→P） | `timeMin`, `singleEvents:false`, `showDeleted:false`, `maxResults`, `pageToken` |
+| `Calendar.Events.insert` | S1 | `sendUpdates:'none'` |
+| `Calendar.Events.patch` | S2/INIT/REPAIR | `sendUpdates:'none'` |
+| `Calendar.Events.remove` | S3/S3D、`cleanupLegacyTodoistCopies` | `sendUpdates:'none'` |
+| `GET /tasks`（Todoist API v1） | アクティブなタスク一覧取得（P→T） | `limit=200`, `cursor` |
+| `POST /tasks`（Todoist API v1） | S4 | `content`, `due_date` または `due_datetime` |
+| `POST /tasks/{id}`（Todoist API v1） | S5 | 同上 |
+| `DELETE /tasks/{id}`（Todoist API v1） | S6/S6D | なし |
 | `SpreadsheetApp.getActive()` | settings/log/links | コンテナバインド |
 | `LockService.getScriptLock` | 直列化 | `tryLock` |
 | `ScriptApp.newTrigger` | setup | `everyMinutes(5)` |
@@ -493,10 +661,13 @@ eventClassifier ──► T,C / N,M / ペア・対象外 / repair
   "oauthScopes": [
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/spreadsheets.currentonly",
-    "https://www.googleapis.com/auth/script.scriptapp"
+    "https://www.googleapis.com/auth/script.scriptapp",
+    "https://www.googleapis.com/auth/script.external_request"
   ]
 }
 ```
+
+`script.external_request` は Todoist API を `UrlFetchApp` で呼ぶために本改訂で追加した（Advanced Service の追加は不要。素の REST API のため）。
 
 ---
 
@@ -509,11 +680,14 @@ eventClassifier ──► T,C / N,M / ペア・対象外 / repair
 | `settings` が未設定、または `primary` が指定されている | `Error` を throw する |
 | カレンダーが存在しない、または権限がない | そのまま throw する |
 | 起点の iCalUID が重複している | `Error` を throw する |
+| Todoist API トークン（スクリプトプロパティ）が未設定・空文字 | `Error` を throw する（本改訂で追加） |
+| Todoist API が 2xx 以外を返す | 本文を含む `Error` を throw する（本改訂で追加） |
+| `links` シートが旧形式（`todoistTaskId` 列が無い） | ヘッダー不一致を検出し、移行手順を示す `Error` を throw する（本改訂で追加） |
 | API のレート制限や一時エラー | そのまま throw する。次の実行で状態を見直し、回復する |
 | 削除しようとしたイベントが既に消えている（404/410） | そのまま throw する。次の実行では対象から外れているので回復する |
 | ロックを取得できない | 何もせずに return する |
 | 実行時間の上限（6 分）を超える | 強制終了する。途中まで反映した結果は、次回に引き継がれる |
-| srcUid が失われている（D6） | 書き戻して WARN を記録する（例外ではない） |
+| srcUid が失われている（D6。T→P のみ） | 書き戻して WARN を記録する（例外ではない） |
 
 ### 5.2 エラー通知
 
@@ -525,7 +699,9 @@ eventClassifier ──► T,C / N,M / ペア・対象外 / repair
 
 - 起点（T・N）の予定は、変更も削除もしない。例外は初回照合の mark と、D6 の repair（srcUid などの書き戻しだけ）
 - ペア（`initialMatch`）は、どの処理でも削除・更新しない
-- 削除は、両カレンダーの取得がすべて成功した後にしか行わない
+- 削除は、両カレンダー・Todoist タスク一覧の取得がすべて成功した後にしか行わない
+- ユーザーが Todoist 側で完了・削除したタスクは、S4 で作り直さない（D11）
+- `cleanupLegacyTodoistCopies` は、`srcUid` を持たない（本物のタスクの）イベントと、`initialMatch` を持つ（ペアの）イベントを絶対に削除しない
 
 ---
 
@@ -535,6 +711,7 @@ eventClassifier ──► T,C / N,M / ペア・対象外 / repair
 - スプレッドシートは共有しない（編集者がスクリプトを編集できてしまうため）
 - ミラーは `visibility: 'private'`。`attendees` はコピーせず、`sendUpdates: 'none'` を付ける
 - `log` シートには予定のタイトルが残る
+- Todoist API トークンはスクリプトプロパティに保存し、コード・スプレッドシートには書かない（本改訂で追加）
 
 ---
 
@@ -542,26 +719,29 @@ eventClassifier ──► T,C / N,M / ペア・対象外 / repair
 
 ### 7.1 単体テスト（Vitest）
 
-- 対象: `eventClassifier`, `eventContent`, `initialMatcher`, `syncPlanner`, `linksPlanner`
+- 対象: `eventClassifier`, `eventContent`, `initialMatcher`, `syncPlanner`, `linksPlanner`, `todoistGateway`（本改訂で追加）
 - カバレッジ目標: 分岐網羅 90% 以上
 - 主なケース:
-  - 分類: 分類ルール表の 1〜8 の各条件、優先順位、iCalUID の重複で throw、links から復元して repair を作る
+  - 分類: 分類ルール表の 1〜8 の各条件、優先順位、iCalUID の重複で throw、links から復元して repair を作る（T→P。本改訂による変更なし）
   - 正規化: `+09:00` と `Z` を同一とみなす、終日と時刻ありを区別する、繰り返しでの timeZone の差
-  - 計画: S1〜S6、差分なしで `[]`、生成物の重複削除、エコーが起きないこと
+  - 計画（T→P）: S1〜S3/S3D、差分なしで `[]`、生成物の重複削除、エコーが起きないこと
+  - 計画（P→T。本改訂で追加）: S4〜S6/S6D、Todoist タスクの `due` との差分判定、繰り返し N の対象外化、`resolveTodoistTaskLinks` の 4 状態（アクティブ×N有無、非アクティブ×N有無）、`excludeOwnTaskMirrors` の除外・非除外・曖昧一致
   - 初回照合（D1 の回帰テスト）: mark を適用した状態に `planSync` をかけても何も出ないこと。**ペアの片方を消した状態でも delete が出ないこと**
-  - links: 追加、削除、範囲外になった行の除去、`recordedAt` の引き継ぎ、変更がなければ `changed=false`
+  - links: 追加、削除、範囲外になった行の除去、`recordedAt` の引き継ぎ、変更がなければ `changed=false`、`todoistTaskId` 列の読み書き、旧形式ヘッダーの検出（本改訂で追加）
+  - `todoistGateway`（本改訂で追加）: トークン未設定・空文字での throw、非 2xx での throw、`listTasks` のカーソルページング、各エンドポイントの引数
 
 ### 7.2 統合テスト（手動）
 
 - テスト用の Google アカウントと Todoist で行う。シナリオは tasks.md の Phase 3 を参照
+- 本改訂で追加: V6（`due_datetime` の往復確認）、S4〜S6 が実際に Todoist にタスクを作成・更新・削除すること、完了済みタスクが再作成されないこと、二重ミラーが起きないこと
 
 ---
 
 ## 8. パフォーマンス
 
-- 1 回の実行: list が 2 系統とシートの読み込み。差分がなければ書き込みは 0
+- 1 回の実行: Calendar の list が 2 系統、Todoist の `GET /tasks` が 1〜数ページ、シートの読み込み。差分がなければ書き込みは 0
 - ログはまとめて 1 回で追記し、`links` は変わったときだけ全件を書き換える
-- `links` の行数は、未来の生成物とペアの数と同じ程度にとどまる（範囲外になった行は除かれる）
+- `links` の行数は、未来の生成物とペアの数と同じ程度にとどまる（範囲外になった行は除かれる）。ただし、ユーザーが完了・削除した P→T のタスクの links 行は、対応する N が存在する限り残り続ける（D11）
 
 ---
 
@@ -572,17 +752,18 @@ repo/
 ├ src/*.ts
 ├ test/*.test.ts
 ├ appsscript.json
-├ esbuild.config.mjs     # dist/Code.js を出力し、footer で sync/setup を公開
+├ esbuild.config.mjs     # dist/Code.js を出力し、footer で sync/setup/cleanupLegacyTodoistCopies を公開
 ├ .clasp.json            # rootDir: dist
 └ package.json           # build / test / lint / typecheck / push
 ```
 
-手順: `npm run build` → `clasp push` → `setup` を手動実行 → `settings` に ID を入力
+手順: `npm run build` → `clasp push` → `setup` を手動実行 → `settings` に ID を入力 → スクリプトプロパティに `TODOIST_API_TOKEN` を設定
 
 | 場所 | 項目 |
 |---|---|
 | `settings` シート | `todoistCalendarId`、`initialMatchDoneAt`（空欄にすると初回照合をやり直す） |
-| `links` シート | 自動で管理する（手で編集しない） |
+| スクリプトプロパティ | `TODOIST_API_TOKEN`（本改訂で追加。Todoist の設定画面から取得する個人トークン） |
+| `links` シート | 自動で管理する（手で編集しない）。本改訂で `todoistTaskId` 列（F 列）を追加。旧形式のシートは移行が必要（README 参照） |
 | `config.ts` | コードの定数 |
 
 ---
@@ -590,15 +771,16 @@ repo/
 ## 10. 実装上の注意事項と既知の制約
 
 - `Calendar.Events.delete` ではなく **`Calendar.Events.remove`** を使う
-- 更新（S2/S5）では `extendedProperties` を送らない
+- 更新（S2）では `extendedProperties` を送らない
 - トリガーは `setup` で既存のトリガーを確認してから作り、重複させない
+- P→T（S4/S5/S6/S6D）は Todoist API を直接呼び出す。「Todoist」カレンダーへの複製（C）はもう作らない（本改訂）
 
 | # | 内容 |
 |---|---|
-| R1 | 公式連携が同期の critical path に入る（要件どおり） |
+| R1 | T→P は公式連携が critical path に入る（要件どおり）。P→T は Todoist API 直接呼び出しのため、この制約を受けない |
 | R2 | 繰り返し予定の個別回の変更・削除は同期しない（D2） |
-| R3 | C は N を正とし、Todoist 側での変更は元に戻される（D5） |
+| R3 | P→T のタスクは N を正とし、Todoist 側での変更は S5 により元に戻される |
 | R4 | 初回照合でペアになった予定は、その後も同期しない（D1） |
-| R5 | 公式連携がイベントを作り直して `iCalUID` が変わった場合は、生成物だと判別できない（D6） |
-| R6 | 会議が終わる前に、その会議から作ったタスクを完了すると、C が作り直される可能性がある（V3） |
+| R5 | 公式連携がイベントを作り直して `iCalUID` が変わった場合は、T→P の生成物だと判別できない（D6） |
 | R7 | `Calendar.Events.list` の `timeMin` は繰り返し系列（`singleEvents: false`）には効かない。全回終了済みの系列も返ってくるため、`hasFutureInstance` による追加判定（D8）で起点分類から除外する。`requirements.md`「同期範囲」（過去は対象外）を守るための補完措置 |
+| R9 | 繰り返し（`recurrence` を持つ）N は、P→T のタスク化の対象外（D9）。ユーザーが Todoist 側でタスクを完了・削除すると、その N への自動タスク化はその後行われなくなる（`links` の行が残り続けるため。D11）。`links` の `todoistTaskId` 行が失われると、対応するタスクの存在を知る手段が無く、二重作成や孤児化が起こりうる（calendar イベントの `extendedProperties` のような自己修復手段が無いため。D6 相当の仕組みは P→T には無い） |

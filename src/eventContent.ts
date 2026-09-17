@@ -6,6 +6,8 @@
 
 import { CalendarEvent, CalendarRole, LinkKind } from './types';
 import { SRC_UID_KEY, INITIAL_MATCH_KEY, INITIAL_MATCH_VALUE } from './config';
+import type { TodoistTask } from './types';
+import type { TodoistTaskPayload } from './todoistGateway';
 
 export type NormalizedContent = {
   summary: string;
@@ -14,7 +16,8 @@ export type NormalizedContent = {
   recurrence: string; // recurrence 配列を '\n' で連結。なければ ''
 };
 
-function hasNonEmptyRecurrence(event: CalendarEvent): boolean {
+// P→T（Todoist タスク化）の対象外判定にも使うため export する。振る舞いは変更しない。
+export function hasNonEmptyRecurrence(event: CalendarEvent): boolean {
   return event.recurrence !== undefined && event.recurrence.length > 0;
 }
 
@@ -182,4 +185,83 @@ export function buildRepairResource(srcUid: string, linkKind: LinkKind): Calenda
       private: privateProps,
     },
   };
+}
+
+/**
+ * N（primary の起点）の summary を Todoist タスクの content として使うため検証して返す。
+ * Todoist API は空の content を受け付けないため、フォールバックせず明確に throw する。
+ */
+function requireSummaryForTodoist(source: CalendarEvent): string {
+  if (typeof source.summary !== 'string' || source.summary.length === 0) {
+    throw new Error('Source event must have a non-empty summary to build a Todoist task payload.');
+  }
+  return source.summary;
+}
+
+// 'YYYY-MM-DDTHH:MM:SS.sssZ' → 'YYYY-MM-DDTHH:MM:SSZ'（Todoist の due_datetime は秒精度の
+// UTC 表記を受け付ける。ミリ秒部分は落とす）。
+function toTodoistUtcDateTime(epochMs: number): string {
+  return new Date(epochMs).toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+/**
+ * N の start から Todoist タスクの due_date / due_datetime を組み立てる。
+ * 終日（date）の場合は due_date にそのまま使う。時刻ありの場合は UTC の due_datetime に変換する
+ * （Calendar API の dateTime はどのオフセットでも受け取れるが、Todoist には常に Z 付き UTC で送る）。
+ */
+function buildTodoistDueFields(
+  source: CalendarEvent,
+): Pick<TodoistTaskPayload, 'due_date' | 'due_datetime'> {
+  const start = source.start;
+  if (start === undefined) {
+    throw new Error('Source event must have start to build a Todoist task payload.');
+  }
+  if (start.date) {
+    return { due_date: start.date };
+  }
+  if (start.dateTime) {
+    const epochMs = new Date(start.dateTime).getTime();
+    if (Number.isNaN(epochMs)) {
+      throw new Error(`Event start dateTime is not a valid date: ${start.dateTime}`);
+    }
+    return { due_datetime: toTodoistUtcDateTime(epochMs) };
+  }
+  throw new Error('Event start must have either date or dateTime.');
+}
+
+/**
+ * N の CalendarEvent から Todoist タスク用ペイロードを作る（create/update 共通）。
+ * `source.summary → content`、`source.start`（終日）→ `due_date`、`source.start`（時刻あり）→
+ * `due_datetime` を対応付ける。Todoist タスクに `end` は無いため終了時刻は使わない。
+ * 繰り返し（recurrence）を持つ N は呼び出し元（syncPlanner）で対象外にする（この関数では扱わない）。
+ */
+export function buildTodoistTaskPayload(source: CalendarEvent): TodoistTaskPayload {
+  return {
+    content: requireSummaryForTodoist(source),
+    ...buildTodoistDueFields(source),
+  };
+}
+
+/**
+ * P→T 専用の差分判定。N の summary/start と、既存 Todoist タスクの content/due を比較する。
+ * 自分たちが作成・更新するタスクの due は必ず UTC（Z 付き）の due_datetime か、日付のみの
+ * due_date であるため、task.due.date を期待値と文字列比較する。
+ * due が null、または期待した形式と一致しない場合は「内容が異なる」とみなし S5 update を出す
+ * （不確実な場合は安全側＝更新側に倒す）。
+ */
+export function isSameTodoistTaskContent(source: CalendarEvent, task: TodoistTask): boolean {
+  const expected = buildTodoistTaskPayload(source);
+  if (task.content !== expected.content) {
+    return false;
+  }
+  if (task.due === null) {
+    return false;
+  }
+  if (expected.due_date !== undefined) {
+    return task.due.date === expected.due_date;
+  }
+  if (expected.due_datetime !== undefined) {
+    return task.due.date === expected.due_datetime;
+  }
+  return false;
 }

@@ -171,6 +171,88 @@ describe('readLinks', () => {
 
     expect(() => readLinks()).toThrow(/3/);
   });
+
+  describe('todoistTaskId column (P→T migration)', () => {
+    it('throws a clear migration error when the sheet still has the old 5-column header', () => {
+      stubSpreadsheet({
+        links: createFakeSheet([
+          ['calendar', 'iCalUID', 'srcUid', 'kind', 'recordedAt'],
+          ['primary', 'uid-1', 'src-1', 'generated', '2026-01-01T00:00:00.000Z'],
+        ]),
+      });
+
+      expect(() => readLinks()).toThrow(/todoistTaskId/);
+    });
+
+    it('reads a todoist/generated row with an empty iCalUID and a todoistTaskId', () => {
+      stubSpreadsheet({
+        links: createFakeSheet([
+          [...LINKS_HEADER],
+          ['todoist', '', 'src-1', 'generated', '2026-01-01T00:00:00.000Z', 'task-123'],
+        ]),
+      });
+
+      expect(readLinks()).toEqual([
+        {
+          calendar: 'todoist',
+          iCalUID: '',
+          srcUid: 'src-1',
+          kind: 'generated',
+          recordedAt: new Date('2026-01-01T00:00:00.000Z'),
+          todoistTaskId: 'task-123',
+        },
+      ]);
+    });
+
+    it('throws when a todoist/generated row has neither iCalUID nor todoistTaskId', () => {
+      stubSpreadsheet({
+        links: createFakeSheet([
+          [...LINKS_HEADER],
+          ['todoist', '', 'src-1', 'generated', '2026-01-01T00:00:00.000Z', ''],
+        ]),
+      });
+
+      expect(() => readLinks()).toThrow(/todoistTaskId/);
+    });
+
+    it('reads a legacy todoist/generated row (old C copy) with an iCalUID and an empty todoistTaskId', () => {
+      stubSpreadsheet({
+        links: createFakeSheet([
+          [...LINKS_HEADER],
+          ['todoist', 'copy-uid-1', 'src-1', 'generated', '2026-01-01T00:00:00.000Z', ''],
+        ]),
+      });
+
+      expect(readLinks()).toEqual([
+        {
+          calendar: 'todoist',
+          iCalUID: 'copy-uid-1',
+          srcUid: 'src-1',
+          kind: 'generated',
+          recordedAt: new Date('2026-01-01T00:00:00.000Z'),
+        },
+      ]);
+    });
+
+    it('throws when a todoist/generated row has both iCalUID and todoistTaskId', () => {
+      stubSpreadsheet({
+        links: createFakeSheet([
+          [...LINKS_HEADER],
+          ['todoist', 'copy-uid-1', 'src-1', 'generated', '2026-01-01T00:00:00.000Z', 'task-123'],
+        ]),
+      });
+
+      expect(() => readLinks()).toThrow(/todoistTaskId/);
+    });
+
+    it('still requires iCalUID for a non-(todoist/generated) row even with the new header', () => {
+      stubSpreadsheet({
+        links: createFakeSheet([[...LINKS_HEADER], ['primary', '', 'src-1', 'generated', '2026-01-01T00:00:00.000Z', '']]),
+      });
+
+      expect(() => readLinks()).toThrow(/iCalUID/);
+    });
+  });
 });
 
 describe('writeLinks', () => {
@@ -204,17 +286,17 @@ describe('writeLinks', () => {
     stubSpreadsheet({ links: sheet });
 
     writeLinks([
-      { calendar: 'todoist', iCalUID: 'uid-new', srcUid: 'src-new', kind: 'generated', recordedAt: new Date('2026-02-01T00:00:00.000Z') },
+      { calendar: 'primary', iCalUID: 'uid-new', srcUid: 'src-new', kind: 'generated', recordedAt: new Date('2026-02-01T00:00:00.000Z') },
     ]);
 
     expect(sheet.snapshot()).toEqual([
       [...LINKS_HEADER],
-      ['todoist', 'uid-new', 'src-new', 'generated', '2026-02-01T00:00:00.000Z'],
-      ['', '', '', '', ''],
-      ['', '', '', '', ''],
+      ['primary', 'uid-new', 'src-new', 'generated', '2026-02-01T00:00:00.000Z', ''],
+      ['', '', '', '', '', ''],
+      ['', '', '', '', '', ''],
     ]);
     expect(readLinks()).toEqual([
-      { calendar: 'todoist', iCalUID: 'uid-new', srcUid: 'src-new', kind: 'generated', recordedAt: new Date('2026-02-01T00:00:00.000Z') },
+      { calendar: 'primary', iCalUID: 'uid-new', srcUid: 'src-new', kind: 'generated', recordedAt: new Date('2026-02-01T00:00:00.000Z') },
     ]);
   });
 
@@ -227,7 +309,7 @@ describe('writeLinks', () => {
 
     writeLinks([]);
 
-    expect(sheet.snapshot()).toEqual([[...LINKS_HEADER], ['', '', '', '', '']]);
+    expect(sheet.snapshot()).toEqual([[...LINKS_HEADER], ['', '', '', '', '', '']]);
     expect(readLinks()).toEqual([]);
   });
 });
