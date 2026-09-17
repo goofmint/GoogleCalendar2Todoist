@@ -254,8 +254,8 @@ describe('planInitialMatch: D1 regression', () => {
     const markedA = applyMark(a, markA);
     const markedB = applyMark(b, markB);
 
-    const todoistClassified = classify('todoist', [markedA], []);
-    const primaryClassified = classify('primary', [markedB], []);
+    const todoistClassified = classify('todoist', [markedA], [], () => true);
+    const primaryClassified = classify('primary', [markedB], [], () => true);
 
     expect(todoistClassified.origins).toEqual([]);
     expect(todoistClassified.generated).toEqual([]);
@@ -283,8 +283,8 @@ describe('planInitialMatch: D1 regression', () => {
     const markedB = applyMark(b, markB);
 
     // A はカレンダーから削除され、次回取得時の一覧に含まれない
-    const todoistClassified = classify('todoist', [], []);
-    const primaryClassified = classify('primary', [markedB], []);
+    const todoistClassified = classify('todoist', [], [], () => true);
+    const primaryClassified = classify('primary', [markedB], [], () => true);
 
     const actions = planSync({
       t: todoistClassified.origins,
@@ -302,8 +302,8 @@ describe('planInitialMatch: D1 regression', () => {
     const markedA = applyMark(a, markA);
 
     // B はカレンダーから削除され、次回取得時の一覧に含まれない
-    const todoistClassified = classify('todoist', [markedA], []);
-    const primaryClassified = classify('primary', [], []);
+    const todoistClassified = classify('todoist', [markedA], [], () => true);
+    const primaryClassified = classify('primary', [], [], () => true);
 
     const actions = planSync({
       t: todoistClassified.origins,

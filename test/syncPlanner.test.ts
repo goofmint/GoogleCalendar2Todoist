@@ -228,8 +228,8 @@ describe('planSync: echo prevention via classify', () => {
       extendedProperties: { private: { [SRC_UID_KEY]: 'primary-meeting-1@example.com' } },
     };
 
-    const todoistClassified = classify('todoist', [tOrigin, copy], []);
-    const primaryClassified = classify('primary', [nOrigin, mirror], []);
+    const todoistClassified = classify('todoist', [tOrigin, copy], [], () => true);
+    const primaryClassified = classify('primary', [nOrigin, mirror], [], () => true);
 
     const actions = planSync({
       t: todoistClassified.origins,

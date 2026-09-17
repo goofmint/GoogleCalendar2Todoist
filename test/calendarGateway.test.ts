@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { listFutureEvents, insertEvent, patchEvent, removeEvent } from '../src/calendarGateway';
+import { listFutureEvents, insertEvent, patchEvent, removeEvent, hasFutureInstance } from '../src/calendarGateway';
 import type { CalendarEvent } from '../src/types';
-import { LIST_PAGE_SIZE, SEND_UPDATES } from '../src/config';
+import { INSTANCE_LOOKUP_MAX_RESULTS, LIST_PAGE_SIZE, SEND_UPDATES } from '../src/config';
 
 /**
  * `Calendar` advanced service のうち、このモジュールが使う範囲だけを narrow に表現した型。
@@ -17,6 +17,8 @@ type ListOptionalArgs = {
 
 type WriteOptionalArgs = { sendUpdates: string };
 
+type InstancesOptionalArgs = { timeMin: string; maxResults: number; showDeleted: boolean };
+
 type FakeEventsListResponse = { items?: CalendarEvent[]; nextPageToken?: string };
 
 type FakeEventsCollection = {
@@ -24,6 +26,7 @@ type FakeEventsCollection = {
   insert(resource: CalendarEvent, calendarId: string, optionalArgs: WriteOptionalArgs): CalendarEvent;
   patch(resource: CalendarEvent, calendarId: string, eventId: string, optionalArgs: WriteOptionalArgs): CalendarEvent;
   remove(calendarId: string, eventId: string, optionalArgs: WriteOptionalArgs): void;
+  instances(calendarId: string, eventId: string, optionalArgs: InstancesOptionalArgs): FakeEventsListResponse;
 };
 
 type FakeCalendarService = { Events: FakeEventsCollection };
@@ -57,6 +60,7 @@ describe('listFutureEvents', () => {
         insert: vi.fn(),
         patch: vi.fn(),
         remove: vi.fn(),
+        instances: vi.fn(),
       },
     };
     vi.stubGlobal('Calendar', fakeService);
@@ -92,7 +96,7 @@ describe('listFutureEvents', () => {
     const now = new Date('2026-09-16T00:00:00Z');
     const list = vi.fn((): FakeEventsListResponse => ({}));
     const fakeService: FakeCalendarService = {
-      Events: { list, insert: vi.fn(), patch: vi.fn(), remove: vi.fn() },
+      Events: { list, insert: vi.fn(), patch: vi.fn(), remove: vi.fn(), instances: vi.fn() },
     };
     vi.stubGlobal('Calendar', fakeService);
 
@@ -111,7 +115,7 @@ describe('insertEvent / patchEvent / removeEvent', () => {
     const inserted = fakeEvent('new-1');
     const insert = vi.fn(() => inserted);
     const fakeService: FakeCalendarService = {
-      Events: { list: vi.fn(), insert, patch: vi.fn(), remove: vi.fn() },
+      Events: { list: vi.fn(), insert, patch: vi.fn(), remove: vi.fn(), instances: vi.fn() },
     };
     vi.stubGlobal('Calendar', fakeService);
 
@@ -128,7 +132,7 @@ describe('insertEvent / patchEvent / removeEvent', () => {
     const patched = fakeEvent('e-1');
     const patch = vi.fn(() => patched);
     const fakeService: FakeCalendarService = {
-      Events: { list: vi.fn(), insert: vi.fn(), patch, remove: vi.fn() },
+      Events: { list: vi.fn(), insert: vi.fn(), patch, remove: vi.fn(), instances: vi.fn() },
     };
     vi.stubGlobal('Calendar', fakeService);
 
@@ -143,7 +147,7 @@ describe('insertEvent / patchEvent / removeEvent', () => {
   it('removeEvent calls Calendar.Events.remove (not delete) with (calendarId, eventId, { sendUpdates })', () => {
     const remove = vi.fn();
     const fakeService: FakeCalendarService = {
-      Events: { list: vi.fn(), insert: vi.fn(), patch: vi.fn(), remove },
+      Events: { list: vi.fn(), insert: vi.fn(), patch: vi.fn(), remove, instances: vi.fn() },
     };
     vi.stubGlobal('Calendar', fakeService);
 
@@ -151,5 +155,51 @@ describe('insertEvent / patchEvent / removeEvent', () => {
 
     expect(remove).toHaveBeenCalledTimes(1);
     expect(remove).toHaveBeenCalledWith('cal-1', 'e-1', { sendUpdates: SEND_UPDATES });
+  });
+});
+
+describe('hasFutureInstance', () => {
+  it('returns true when instances returns at least one item', () => {
+    const now = new Date('2026-09-16T00:00:00Z');
+    const instances = vi.fn((): FakeEventsListResponse => ({ items: [fakeEvent('a')] }));
+    const fakeService: FakeCalendarService = {
+      Events: { list: vi.fn(), insert: vi.fn(), patch: vi.fn(), remove: vi.fn(), instances },
+    };
+    vi.stubGlobal('Calendar', fakeService);
+
+    expect(hasFutureInstance('cal-1', 'series-1', now)).toBe(true);
+    expect(instances).toHaveBeenCalledTimes(1);
+    expect(instances).toHaveBeenCalledWith('cal-1', 'series-1', {
+      timeMin: now.toISOString(),
+      maxResults: INSTANCE_LOOKUP_MAX_RESULTS,
+      showDeleted: false,
+    });
+  });
+
+  it('returns false when instances returns no items', () => {
+    const now = new Date('2026-09-16T00:00:00Z');
+    const instances = vi.fn((): FakeEventsListResponse => ({}));
+    const fakeService: FakeCalendarService = {
+      Events: { list: vi.fn(), insert: vi.fn(), patch: vi.fn(), remove: vi.fn(), instances },
+    };
+    vi.stubGlobal('Calendar', fakeService);
+
+    expect(hasFutureInstance('cal-1', 'series-1', now)).toBe(false);
+  });
+
+  it('returns false when instances returns an empty items array', () => {
+    const now = new Date('2026-09-16T00:00:00Z');
+    const instances = vi.fn((): FakeEventsListResponse => ({ items: [] }));
+    const fakeService: FakeCalendarService = {
+      Events: { list: vi.fn(), insert: vi.fn(), patch: vi.fn(), remove: vi.fn(), instances },
+    };
+    vi.stubGlobal('Calendar', fakeService);
+
+    expect(hasFutureInstance('cal-1', 'series-1', now)).toBe(false);
+  });
+
+  it('throws when the Calendar advanced service is not enabled', () => {
+    vi.stubGlobal('Calendar', undefined);
+    expect(() => hasFutureInstance('cal-1', 'series-1', new Date())).toThrow();
   });
 });

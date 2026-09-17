@@ -66,10 +66,25 @@ M には `reminders: { useDefault: false, overrides: [] }` を設定します。
 | V4 | `Events.patch` に `recurrence: []` を送ると、繰り返しが解除されるか | 解除されなければ、繰り返しをやめた予定を更新できない |
 | V5 | `Events.patch` で `extendedProperties.private` の一部のキーだけを送ったとき、他のキーが残るか | 残らなければ、mark や修復のときに公式連携が書いたキーを消してしまう |
 
-**V3 の補足**: 同期範囲は「現在時刻以降」（`timeMin` は予定の**終了時刻**で判定される）です。終わった会議のタスクを完了しても、C は既に範囲の外なので S4 は動きません。影響が残るのは、次の 2 つだけです。
+**V3 の補足（修正）**: 単発の予定については、同期範囲は「現在時刻以降」（`timeMin` は予定の**終了時刻**で判定される）です。終わった会議のタスクを完了しても、C は既に範囲の外なので S4 は動きません。
+
+ただし、繰り返し予定（`recurrence` あり、`singleEvents: false`）には `timeMin` が効きません。**`Calendar.Events.list` は、系列の最終回がとうに終わっていても、その系列を返します**（系列変更後などに顕著）。`requirements.md` の「同期範囲」（過去は対象外）に反するため、D8 で取得後にもう一段のフィルタを設ける。
+
+影響が残るのは、次の 2 つだけです。
 
 - 会議が終わる前にタスクを完了した場合（その会議の C は作り直される）
-- 繰り返し系列。系列の最後の回が未来にある限り、系列全体が範囲内に残る
+- 繰り返し系列。系列の最後の回が未来にある限り、系列全体が範囲内に残る（D8 適用後も、未来回が残っている系列はこれまでどおり範囲内）
+
+### D8. 全回終了済みの繰り返し系列を起点分類から除外する【確定】
+
+**問題**: `listFutureEvents` の `timeMin` は予定の終了時刻で判定されるが、`singleEvents: false` で取得した繰り返し系列には効かない。`RRULE:FREQ=WEEKLY;UNTIL=20260817T065959Z;BYDAY=MO` のように全回が過去に終わっている系列でも API がそのまま返してくる。これを起点（T/N）として分類すると、`requirements.md`（同期範囲: 過去は対象外）に反して S1/S4 でミラー・複製が作られ続ける。
+
+**対策（案A、instances API 呼び出し）**: `recurrence` を持つ起点候補に限り、`calendarGateway.hasFutureInstance(calendarId, eventId, now)` で `Calendar.Events.instances(calendarId, eventId, { timeMin: now.toISOString(), maxResults: INSTANCE_LOOKUP_MAX_RESULTS, showDeleted: false })` を呼び、未来回の有無を確認する。未来回がなければ `classify()` のルール8（起点確定）でその予定を起点から除外する。
+
+- `COUNT` 指定や例外回（EXDATE/RDATE）も API 側の展開結果で正確に判定できる（自前で RRULE を解析しない）
+- `classify()` の純粋性を保つため、判定は `hasFutureOccurrence: (event: CalendarEvent) => boolean` として注入する。`classify()` 自体は GAS グローバル（`Calendar`）を直接呼ばない
+- 除外するのは起点候補（ルール8）だけで、生成物（ルール4・5、M/C）には適用しない。除外した起点の生成物は `origins` から欠落するため、`reconcile()` の S3/S6 の孤児削除により次回同期で自動的に消える。既存の「終了系列の複製」もこれで解消する
+- 繰り返しを持つ起点候補ごとに `Events.instances` の呼び出しが 1 回増える（API 呼び出しの追加コスト）
 
 ---
 
@@ -235,10 +250,12 @@ export function listFutureEvents(calendarId: string, now: Date): CalendarEvent[]
 export function insertEvent(calendarId: string, resource: CalendarEvent): CalendarEvent;
 export function patchEvent(calendarId: string, eventId: string, resource: CalendarEvent): CalendarEvent;
 export function removeEvent(calendarId: string, eventId: string): void;
+export function hasFutureInstance(calendarId: string, eventId: string, now: Date): boolean;
 ```
 
 - `listFutureEvents` は `Calendar.Events.list(calendarId, { timeMin: now.toISOString(), singleEvents: false, showDeleted: false, maxResults: LIST_PAGE_SIZE, pageToken })` を `nextPageToken` がなくなるまで繰り返す
 - 書き込みにはすべて `{ sendUpdates: SEND_UPDATES }` を付ける。例外は捕捉しない
+- `hasFutureInstance`（D8）は `Calendar.Events.instances(calendarId, eventId, { timeMin: now.toISOString(), maxResults: INSTANCE_LOOKUP_MAX_RESULTS, showDeleted: false })` を呼び、`response.items` が 1 件以上あれば `true` を返す
 
 #### eventClassifier.ts
 
@@ -251,6 +268,7 @@ export function classify(
   calendar: CalendarRole,
   events: ReadonlyArray<CalendarEvent>,
   links: ReadonlyArray<LinkEntry>,
+  hasFutureOccurrence: (event: CalendarEvent) => boolean,  // D8。GAS グローバルを呼ばないための注入
 ): ClassifiedEvents;
 ```
 
@@ -265,9 +283,10 @@ export function classify(
 | 5 | `srcUid` あり | C | M |
 | 6 | `eventType` が `ORIGIN_EVENT_TYPES` にない（D3） | ― | 対象外 |
 | 7 | 自分が辞退している | ― | 対象外 |
-| 8 | 上記以外 | T | N |
+| 8 | 上記以外 | T | N（ただし `recurrence` があり `hasFutureOccurrence(event)` が偽なら対象外。D8） |
 
 - 3 は、`initialMatch` だけが消えて `srcUid` が残っていた場合に、ペアが M/C と判定されて S3/S6 で削除されるのを防ぐためのルール
+- 8 の `hasFutureOccurrence` は、`recurrence` を持つ起点候補だけに適用する（API 呼び出しを最小化する）。生成物（4・5、M/C）には適用しない（D8）
 
 - 起点の中で `iCalUID` が重複していたら `Error` を throw する（D2 の除外をした後に重複が残るのは、異常なデータ）
 
@@ -394,8 +413,10 @@ try:
   settings = readSettings()
   links = readLinks()
   now = new Date()
-  todoist = classify('todoist', listFutureEvents(settings.todoistCalendarId, now), links)
-  primary = classify('primary', listFutureEvents(PRIMARY_CALENDAR_ID, now), links)
+  todoist = classify('todoist', listFutureEvents(settings.todoistCalendarId, now), links,
+                      (event) => hasFutureInstance(settings.todoistCalendarId, requireEventId(event), now))
+  primary = classify('primary', listFutureEvents(PRIMARY_CALENDAR_ID, now), links,
+                      (event) => hasFutureInstance(PRIMARY_CALENDAR_ID, requireEventId(event), now))
   repairs = [...todoist.repairs, ...primary.repairs]
 
   if settings.initialMatchDoneAt が空:
@@ -580,3 +601,4 @@ repo/
 | R4 | 初回照合でペアになった予定は、その後も同期しない（D1） |
 | R5 | 公式連携がイベントを作り直して `iCalUID` が変わった場合は、生成物だと判別できない（D6） |
 | R6 | 会議が終わる前に、その会議から作ったタスクを完了すると、C が作り直される可能性がある（V3） |
+| R7 | `Calendar.Events.list` の `timeMin` は繰り返し系列（`singleEvents: false`）には効かない。全回終了済みの系列も返ってくるため、`hasFutureInstance` による追加判定（D8）で起点分類から除外する。`requirements.md`「同期範囲」（過去は対象外）を守るための補完措置 |

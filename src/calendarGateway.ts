@@ -6,7 +6,7 @@
  * 例外はキャッチせず、呼び出し元へ伝播させる（design.md §5.1）。
  */
 
-import { LIST_PAGE_SIZE, SEND_UPDATES } from './config';
+import { INSTANCE_LOOKUP_MAX_RESULTS, LIST_PAGE_SIZE, SEND_UPDATES } from './config';
 import type { CalendarEvent } from './types';
 
 /**
@@ -46,6 +46,22 @@ export function listFutureEvents(calendarId: string, now: Date): CalendarEvent[]
   } while (pageToken !== undefined);
 
   return events;
+}
+
+/**
+ * 繰り返し予定に、`now` 以降の回が残っているかどうかを判定する。
+ * `Calendar.Events.instances(calendarId, eventId, { timeMin: now.toISOString(),
+ * maxResults: INSTANCE_LOOKUP_MAX_RESULTS, showDeleted: false })` を呼び、
+ * `response.items` が 1 件以上あれば true を返す。
+ */
+export function hasFutureInstance(calendarId: string, eventId: string, now: Date): boolean {
+  const service = getCalendarService();
+  const response = service.Events.instances(calendarId, eventId, {
+    timeMin: now.toISOString(),
+    maxResults: INSTANCE_LOOKUP_MAX_RESULTS,
+    showDeleted: false,
+  });
+  return response.items !== undefined && response.items.length > 0;
 }
 
 /**
