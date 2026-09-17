@@ -48,7 +48,14 @@ export type SpreadsheetLike = {
 
 export const SETTINGS_HEADER: ReadonlyArray<string> = ['key', 'value'];
 export const LOG_HEADER: ReadonlyArray<string> = ['ts', 'level', 'direction', 'uid', 'message'];
-export const LINKS_HEADER: ReadonlyArray<string> = ['calendar', 'iCalUID', 'srcUid', 'kind', 'recordedAt'];
+export const LINKS_HEADER: ReadonlyArray<string> = [
+  'calendar',
+  'iCalUID',
+  'srcUid',
+  'kind',
+  'recordedAt',
+  'todoistTaskId',
+];
 
 const REQUIRED_SETTINGS_KEYS: ReadonlyArray<string> = [
   SETTING_KEY_TODOIST_CALENDAR_ID,

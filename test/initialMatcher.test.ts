@@ -266,7 +266,9 @@ describe('planInitialMatch: D1 regression', () => {
       t: todoistClassified.origins,
       n: primaryClassified.origins,
       m: primaryClassified.generated,
-      c: todoistClassified.generated,
+      c: [], // P→T は本チケットで Todoist タスク（GeneratedTodoistTask）に置き換わった。
+             // この回帰テストは C（旧経路のカレンダーイベント）が絶対に生成されないことを見るのが目的で、
+             // todoistClassified.generated は常に空であるため、型を合わせるためそのまま [] を渡す。
     });
     expect(actions).toEqual([]);
 
@@ -290,7 +292,9 @@ describe('planInitialMatch: D1 regression', () => {
       t: todoistClassified.origins,
       n: primaryClassified.origins,
       m: primaryClassified.generated,
-      c: todoistClassified.generated,
+      c: [], // P→T は本チケットで Todoist タスク（GeneratedTodoistTask）に置き換わった。
+             // この回帰テストは C（旧経路のカレンダーイベント）が絶対に生成されないことを見るのが目的で、
+             // todoistClassified.generated は常に空であるため、型を合わせるためそのまま [] を渡す。
     });
 
     expect(actions).toEqual([]);
@@ -309,7 +313,9 @@ describe('planInitialMatch: D1 regression', () => {
       t: todoistClassified.origins,
       n: primaryClassified.origins,
       m: primaryClassified.generated,
-      c: todoistClassified.generated,
+      c: [], // P→T は本チケットで Todoist タスク（GeneratedTodoistTask）に置き換わった。
+             // この回帰テストは C（旧経路のカレンダーイベント）が絶対に生成されないことを見るのが目的で、
+             // todoistClassified.generated は常に空であるため、型を合わせるためそのまま [] を渡す。
     });
 
     expect(actions).toEqual([]);

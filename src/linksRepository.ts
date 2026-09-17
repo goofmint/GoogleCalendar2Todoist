@@ -38,7 +38,14 @@ export type SpreadsheetLike = {
   getSheetByName(name: string): SheetLike | null;
 };
 
-export const LINKS_HEADER: ReadonlyArray<string> = ['calendar', 'iCalUID', 'srcUid', 'kind', 'recordedAt'];
+export const LINKS_HEADER: ReadonlyArray<string> = [
+  'calendar',
+  'iCalUID',
+  'srcUid',
+  'kind',
+  'recordedAt',
+  'todoistTaskId',
+];
 
 const CALENDAR_ROLES: ReadonlyArray<CalendarRole> = ['primary', 'todoist'];
 const LINK_KINDS: ReadonlyArray<LinkKind> = ['generated', 'paired'];
@@ -66,6 +73,33 @@ function isLinkKind(value: string): value is LinkKind {
   return (LINK_KINDS as ReadonlyArray<string>).includes(value);
 }
 
+/**
+ * links シートのヘッダー行が現行の LINKS_HEADER（todoistTaskId 列を含む 6 列）と一致するかを
+ * 検証する。旧形式（5 列。todoistTaskId 列が無い）のシートは、ヘッダー文字列が一致しないため
+ * ここで検出され、何を直せばよいかが分かる明確なメッセージで throw する（正しく読めているつもりで
+ * 実は列がずれている、という事故を防ぐ。フォールバックや黙った読み替えはしない）。
+ * ヘッダー行そのものが無い（まっさらなシート）場合は何もしない（setup 前の状態。呼び出し元で別途扱う）。
+ */
+function validateHeaderOrThrow(sheet: SheetLike): void {
+  if (sheet.getLastRow() < 1) {
+    return;
+  }
+  const headerRow = sheet
+    .getRange(1, 1, 1, LINKS_HEADER.length)
+    .getValues()[0]
+    .map((value) => String(value));
+  const matches =
+    headerRow.length === LINKS_HEADER.length && LINKS_HEADER.every((header, index) => header === headerRow[index]);
+  if (!matches) {
+    throw new Error(
+      `links シートのヘッダー行が現行の形式（${LINKS_HEADER.join(', ')}）と一致しません` +
+        `（見つかった値: ${headerRow.join(', ')}）。` +
+        'todoistTaskId 列が無い旧形式の links シートの可能性があります。' +
+        'README の「links シートの移行手順」を確認し、F1 セルに "todoistTaskId" を追記してから再実行してください。',
+    );
+  }
+}
+
 function parseRecordedAt(value: CellValue, rowNumber: number): Date {
   if (value instanceof Date) {
     if (Number.isNaN(value.getTime())) {
@@ -87,23 +121,35 @@ function parseRecordedAt(value: CellValue, rowNumber: number): Date {
  */
 export function readLinks(): LinkEntry[] {
   const sheet = getLinksSheetOrThrow();
+  validateHeaderOrThrow(sheet);
   const rowCount = sheet.getLastRow() - 1;
   if (rowCount <= 0) {
     return [];
   }
 
-  const rows = sheet.getRange(2, 1, rowCount, 5).getValues();
+  const rows = sheet.getRange(2, 1, rowCount, LINKS_HEADER.length).getValues();
   return rows.map((row, index) => {
     const rowNumber = index + 2; // ヘッダの次の行が 2 行目
-    const [calendarRaw, iCalUIDRaw, srcUidRaw, kindRaw, recordedAtRaw] = row;
+    const [calendarRaw, iCalUIDRaw, srcUidRaw, kindRaw, recordedAtRaw, todoistTaskIdRaw] = row;
 
     const calendarValue = String(calendarRaw);
     if (!isCalendarRole(calendarValue)) {
       throw new Error(`links シートの ${rowNumber} 行目: calendar "${calendarValue}" は primary/todoist のいずれかにしてください。`);
     }
 
+    const kindValue = String(kindRaw);
+    if (!isLinkKind(kindValue)) {
+      throw new Error(`links シートの ${rowNumber} 行目: kind "${kindValue}" は generated/paired のいずれかにしてください。`);
+    }
+
+    // todoist の generated 行には 2 種類ある。
+    //   - Todoist タスク由来の行: iCalUID 空欄・todoistTaskId あり
+    //   - 旧経路の C 複製の行（移行前から残る行。cleanupLegacyTodoistCopies が削除する）: iCalUID あり・todoistTaskId 空欄
+    // どちらか一方だけを持つことを必須にする。それ以外（primary/paired）は従来どおり iCalUID を必須にする。
+    const isTodoistGenerated = calendarValue === 'todoist' && kindValue === 'generated';
+
     const iCalUID = String(iCalUIDRaw).trim();
-    if (iCalUID === '') {
+    if (!isTodoistGenerated && iCalUID === '') {
       throw new Error(`links シートの ${rowNumber} 行目: iCalUID が空です。`);
     }
 
@@ -112,14 +158,19 @@ export function readLinks(): LinkEntry[] {
       throw new Error(`links シートの ${rowNumber} 行目: srcUid が空です。`);
     }
 
-    const kindValue = String(kindRaw);
-    if (!isLinkKind(kindValue)) {
-      throw new Error(`links シートの ${rowNumber} 行目: kind "${kindValue}" は generated/paired のいずれかにしてください。`);
+    const todoistTaskId = String(todoistTaskIdRaw).trim();
+    if (isTodoistGenerated && (iCalUID === '') === (todoistTaskId === '')) {
+      throw new Error(
+        `links シートの ${rowNumber} 行目: todoist の generated 行には iCalUID（旧経路の複製）と todoistTaskId（タスク）のどちらか一方だけを入れてください。`,
+      );
     }
 
     const recordedAt = parseRecordedAt(recordedAtRaw, rowNumber);
 
     const entry: LinkEntry = { calendar: calendarValue, iCalUID, srcUid, kind: kindValue, recordedAt };
+    if (todoistTaskId !== '') {
+      entry.todoistTaskId = todoistTaskId;
+    }
     return entry;
   });
 }
@@ -137,7 +188,14 @@ export function writeLinks(entries: ReadonlyArray<LinkEntry>): void {
     if (Number.isNaN(entry.recordedAt.getTime())) {
       throw new Error(`links に書き込む行の recordedAt が不正です (calendar=${entry.calendar}, iCalUID=${entry.iCalUID})。`);
     }
-    return [entry.calendar, entry.iCalUID, entry.srcUid, entry.kind, entry.recordedAt.toISOString()];
+    return [
+      entry.calendar,
+      entry.iCalUID,
+      entry.srcUid,
+      entry.kind,
+      entry.recordedAt.toISOString(),
+      entry.todoistTaskId === undefined ? '' : entry.todoistTaskId,
+    ];
   });
 
   const existingRowCount = Math.max(sheet.getLastRow() - 1, 0);

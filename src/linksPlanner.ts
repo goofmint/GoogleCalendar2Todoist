@@ -7,13 +7,19 @@
 
 import type { CalendarRole, ExecutionResult, LinkEntry } from './types';
 
-type LinkKeyInput = { calendar: CalendarRole; iCalUID: string };
+type LinkKeyInput = { calendar: CalendarRole; iCalUID: string; todoistTaskId?: string };
 type ObservedRow = Omit<LinkEntry, 'recordedAt'>;
 
 /**
- * `ExecutionResult.deletedKeys` と同じ形式（`${calendar}:${iCalUID}`）のキーを組み立てる。
+ * links の索引キーを組み立てる。
+ * `todoist` の generated 行（Todoist タスク由来。todoistTaskId を持つ）は `todoist:${todoistTaskId}`、
+ * それ以外（primary/todoist の calendar イベント由来）は従来どおり `${calendar}:${iCalUID}` を使う。
+ * `ExecutionResult.deletedKeys` もこの形式のキーを使う。
  */
 export function linkKey(entry: LinkKeyInput): string {
+  if (entry.calendar === 'todoist' && entry.todoistTaskId !== undefined && entry.todoistTaskId.length > 0) {
+    return `todoist:${entry.todoistTaskId}`;
+  }
   return `${entry.calendar}:${entry.iCalUID}`;
 }
 
@@ -61,6 +67,7 @@ export function planLinks(input: {
       srcUid: row.srcUid,
       kind: row.kind,
       recordedAt,
+      todoistTaskId: row.todoistTaskId,
     });
   }
 

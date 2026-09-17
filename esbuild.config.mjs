@@ -13,7 +13,10 @@ await build({
   target: 'es2020',
   globalName: 'G2T',
   footer: {
-    js: 'function sync() { G2T.sync(); }\nfunction setup() { G2T.setup(); }',
+    js:
+      'function sync() { G2T.sync(); }\n' +
+      'function setup() { G2T.setup(); }\n' +
+      'function cleanupLegacyTodoistCopies() { G2T.cleanupLegacyTodoistCopies(); }',
   },
 });
 
